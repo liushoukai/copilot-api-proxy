@@ -1,0 +1,26 @@
+[package]
+name = "copilot-api-proxy"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "copilot-api-proxy"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "0.1", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "5"
+clap = { version = "4", features = ["derive"] }
+axum = "0.8"
+uuid = { version = "1", features = ["v4"] }
+tokio-util = { version = "0.7.18", features = ["io"] }
+tokio-stream = "0.1.18"
+futures = "0.3.32"
