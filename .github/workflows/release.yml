@@ -1,0 +1,174 @@
+name: Build and Release
+
+# 触发条件
+on:
+  push:
+    tags:
+      - 'v*'  # 推送 tag 时触发，如 v1.0.0
+  workflow_dispatch:  # 支持手动触发
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  BIN_NAME: copilot-api-proxy
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS Intel (x86_64)
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: copilot-api-proxy-macos-x86_64
+
+          # macOS Apple Silicon (ARM64)
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: copilot-api-proxy-macos-arm64
+
+          # Linux x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: copilot-api-proxy-linux-x86_64
+            use_zigbuild: true
+
+          # Linux ARM64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: copilot-api-proxy-linux-arm64
+            use_zigbuild: true
+
+          # Windows x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-gnu
+            artifact_name: copilot-api-proxy-windows-x86_64
+
+    steps:
+      - name: Checkout 代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 配置缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1
+          shared-key: ${{ matrix.target }}
+          cache-on-failure: true
+
+      - name: 安装 Zig（Linux 平台需要）
+        if: matrix.use_zigbuild
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: 安装 cargo-zigbuild（Linux 平台）
+        if: matrix.use_zigbuild
+        run: cargo install cargo-zigbuild
+
+      - name: 安装 MinGW（Windows 需要）
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: mingw-w64-x86_64-gcc
+
+      - name: 编译
+        run: |
+          if [ "${{ matrix.use_zigbuild }}" = "true" ]; then
+            if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
+              cargo-zigbuild build --release --bin $BIN_NAME --target x86_64-unknown-linux-gnu.2.28
+            elif [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+              cargo-zigbuild build --release --bin $BIN_NAME --target aarch64-unknown-linux-gnu.2.28
+            fi
+          else
+            cargo build --release --bin $BIN_NAME --target ${{ matrix.target }}
+          fi
+        shell: bash
+
+      - name: 打包二进制文件
+        run: |
+          mkdir -p release
+          BUILD_DIR="target/${{ matrix.target }}/release"
+
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            cp "$BUILD_DIR/${BIN_NAME}.exe" release/
+            echo "✅ 打包: ${BIN_NAME}.exe"
+          else
+            cp "$BUILD_DIR/$BIN_NAME" release/
+            chmod +x "release/$BIN_NAME"
+            echo "✅ 打包: $BIN_NAME"
+          fi
+        shell: bash
+
+      - name: 创建压缩包
+        run: |
+          cd release
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            7z a ../${{ matrix.artifact_name }}.zip ./*
+          else
+            tar czf ../${{ matrix.artifact_name }}.tar.gz ./*
+          fi
+          cd ..
+        shell: bash
+
+      - name: 生成校验和
+        run: |
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            sha256sum ${{ matrix.artifact_name }}.zip > ${{ matrix.artifact_name }}.zip.sha256
+          else
+            sha256sum ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
+          fi
+        shell: bash
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            ${{ matrix.artifact_name }}.tar.gz
+            ${{ matrix.artifact_name }}.tar.gz.sha256
+            ${{ matrix.artifact_name }}.zip
+            ${{ matrix.artifact_name }}.zip.sha256
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release:
+    name: 创建 Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout 代码
+        uses: actions/checkout@v4
+
+      - name: 下载所有编译产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.tar.gz.sha256
+            artifacts/**/*.zip
+            artifacts/**/*.zip.sha256
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
