@@ -1,85 +1,83 @@
 # copilot-api-proxy
 
-将 GitHub Copilot 包装为兼容 **OpenAI / Anthropic** 接口的本地代理服务。  
-只需拥有 GitHub Copilot 订阅，即可通过标准 API 调用各类 Copilot 模型。
+English | [中文](./README.zh.md)
 
-## 功能特性
+A local proxy that wraps GitHub Copilot as a standard **OpenAI / Anthropic**-compatible API.  
+All you need is a GitHub Copilot subscription to call Copilot models via standard API clients.
 
-- 兼容 OpenAI Chat Completions API（`/v1/chat/completions`）
-- 兼容 Anthropic Messages API（`/v1/messages`），支持流式响应
-- 兼容 OpenAI Embeddings API（`/v1/embeddings`）
-- 支持模型列表查询（`/v1/models`）
-- 支持 HTTP/HTTPS 代理透传
+## Features
 
-## 构建
+- OpenAI Chat Completions API compatible (`/v1/chat/completions`)
+- Anthropic Messages API compatible (`/v1/messages`), with streaming support
+- OpenAI Embeddings API compatible (`/v1/embeddings`)
+- Model listing (`/v1/models`)
+- HTTP/HTTPS proxy passthrough via environment variables
+
+## Build
 
 ```bash
 cargo build --release
 ```
 
-编译产物位于 `./target/release/copilot-api-proxy`。
+The binary will be at `./target/release/copilot-api-proxy`.
 
-## 使用流程
+## Usage
 
-### 第一步：授权登录
+### Step 1: Authenticate
 
-首次使用需通过 GitHub Device Flow 完成授权，Token 会缓存到本地：
+On first use, authorize via GitHub Device Flow. The token will be cached locally:
 
 ```bash
 ./target/release/copilot-api-proxy auth
 ```
 
-可用参数：
+| Flag | Description |
+|------|-------------|
+| `-f, --force` | Force re-authentication, ignoring cached token |
+| `--show-token` | Print the GitHub Token to terminal after auth |
 
-| 参数 | 说明 |
-|------|------|
-| `-f, --force` | 强制重新授权，忽略本地缓存的 Token |
-| `--show-token` | 授权成功后在终端打印 GitHub Token |
-
-### 第二步：启动代理服务
+### Step 2: Start the proxy
 
 ```bash
 ./target/release/copilot-api-proxy start
 ```
 
-可用参数：
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-p, --port` | `4142` | Listening port |
+| `-v, --verbose` | `false` | Enable DEBUG level logging |
+| `-g, --github-token` | — | Provide a GitHub Token directly, skip auth flow |
+| `-a, --account-type` | `individual` | Account type: `individual` / `business` / `enterprise` |
+| `--show-token` | `false` | Print GitHub Token and Copilot Token on startup |
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `-p, --port` | `4142` | 监听端口 |
-| `-v, --verbose` | `false` | 开启 DEBUG 级别详细日志 |
-| `-g, --github-token` | — | 直接传入 GitHub Token，跳过授权流程 |
-| `-a, --account-type` | `individual` | 账户类型：`individual` / `business` / `enterprise` |
-| `--show-token` | `false` | 启动时在终端打印 GitHub Token 和 Copilot Token |
+Once started, the proxy listens at `http://127.0.0.1:4142`.
 
-启动成功后，代理监听在 `http://127.0.0.1:4142`。
+## API Endpoints
 
-## API 端点
-
-| 端点 | 说明 |
-|------|------|
-| `GET /health` | 健康检查，返回 Token 状态 |
-| `GET /v1/models` | 获取可用模型列表 |
-| `POST /v1/chat/completions` | OpenAI Chat Completions（支持流式） |
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Health check, returns token status |
+| `GET /v1/models` | List available models |
+| `POST /v1/chat/completions` | OpenAI Chat Completions (streaming supported) |
 | `POST /v1/embeddings` | OpenAI Embeddings |
-| `POST /v1/messages` | Anthropic Messages API（支持流式） |
+| `POST /v1/messages` | Anthropic Messages API (streaming supported) |
 
-## 示例
+## Examples
 
-### 配合代理启动（需要科学上网时）
+### Start with an HTTP proxy
 
 ```bash
 HTTP_PROXY=http://127.0.0.1:7890 HTTPS_PROXY=http://127.0.0.1:7890 \
   ./target/release/copilot-api-proxy start --port 4142 --verbose
 ```
 
-### 直接传入 GitHub Token 启动
+### Start with a GitHub Token directly
 
 ```bash
 ./target/release/copilot-api-proxy start --github-token ghp_xxxxxxxxxxxx
 ```
 
-### 调用 Chat Completions
+### Call Chat Completions
 
 ```bash
 curl http://127.0.0.1:4142/v1/chat/completions \
@@ -91,7 +89,7 @@ curl http://127.0.0.1:4142/v1/chat/completions \
   }'
 ```
 
-### 调用 Anthropic Messages API
+### Call Anthropic Messages API
 
 ```bash
 curl http://127.0.0.1:4142/v1/messages \
@@ -103,9 +101,9 @@ curl http://127.0.0.1:4142/v1/messages \
   }'
 ```
 
-### 配置到 OpenAI 兼容客户端
+### Use with an OpenAI-compatible client
 
-将客户端的 `base_url` 设置为 `http://127.0.0.1:4142/v1`，`api_key` 填任意字符串即可。
+Set `base_url` to `http://127.0.0.1:4142/v1` and use any string as `api_key`.
 
 ```python
 from openai import OpenAI
