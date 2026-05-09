@@ -101,6 +101,30 @@ curl http://127.0.0.1:4142/v1/messages \
   }'
 ```
 
+### 配合 Claude Code 使用
+
+**方式一：永久生效 — 修改 `settings.json`**
+
+在 Claude Code 的 `settings.json` 中添加以下配置，即可将所有 Anthropic API 请求转发到本代理：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4142",
+    "ANTHROPIC_API_KEY": "unused"
+  }
+}
+```
+
+**方式二：单次生效 — 通过环境变量**
+
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:4142 ANTHROPIC_API_KEY=unused claude
+```
+
+> **注意：** 启动 Claude Code 前请确保代理服务已在运行。  
+> 模型名称（如 `claude-sonnet-4-5`）会被代理自动规范化为 Copilot 可接受的格式。
+
 ### 配置到 OpenAI 兼容客户端
 
 将客户端的 `base_url` 设置为 `http://127.0.0.1:4142/v1`，`api_key` 填任意字符串即可。

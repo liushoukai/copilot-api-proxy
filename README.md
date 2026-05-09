@@ -101,6 +101,30 @@ curl http://127.0.0.1:4142/v1/messages \
   }'
 ```
 
+### Use with Claude Code
+
+**Option 1: Permanent — via `settings.json`**
+
+Add the following to your Claude Code `settings.json` to redirect all Anthropic API requests to this proxy:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4142",
+    "ANTHROPIC_API_KEY": "unused"
+  }
+}
+```
+
+**Option 2: One-off — via environment variables**
+
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:4142 ANTHROPIC_API_KEY=unused claude
+```
+
+> **Note:** The proxy must be running before you start Claude Code.  
+> Model names like `claude-sonnet-4-5` will be automatically normalized to a format accepted by Copilot.
+
 ### Use with an OpenAI-compatible client
 
 Set `base_url` to `http://127.0.0.1:4142/v1` and use any string as `api_key`.
