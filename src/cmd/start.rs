@@ -66,25 +66,57 @@ pub async fn run(args: &StartArgs) -> Result<()> {
         }
     }
 
-    // 预热模型列表缓存
-    match get_models(&state.client, &state).await {
-        Ok(models) => {
-            info!(
-                "可用模型：\n{}",
-                models
-                    .data
-                    .iter()
-                    .map(|m| format!("  - {}", m.id))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            );
-            *state.models.write().await = Some(models);
-        }
-        Err(e) => {
-            tracing::warn!("预热模型列表失败：{:#}", e);
-        }
+    // 预热模型列表缓存，失败时指数退避重试，全部失败则终止启动
+    const MAX_RETRIES: u32 = 3;
+    let models = fetch_models_with_retry(&state, MAX_RETRIES).await?;
+
+    info!(
+        "可用模型：\n{}",
+        models
+            .data
+            .iter()
+            .map(|m| format!("  - {}", m.id))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // 检查是否包含 claude 模型，若无则提前警告
+    // GitHub Copilot 会按请求来源 IP 返回不同的模型列表：
+    // 中国大陆 IP 直连时，服务端会过滤掉 claude-* 模型（Anthropic 地区限制）；
+    // 走海外代理后，返回完整列表，claude-* 才会出现。
+    let claude_count = models.data.iter().filter(|m| m.id.starts_with("claude-")).count();
+    if claude_count == 0 {
+        tracing::warn!(
+            "⚠️  模型列表中没有 claude-* 模型，Claude Code / Anthropic 请求将无法正常工作。\
+             这通常是因为当前出口 IP 位于中国大陆，Copilot 服务端会按地区过滤 Claude 模型。\
+             请通过 HTTP_PROXY/HTTPS_PROXY 环境变量设置海外代理后重新启动。"
+        );
     }
+    *state.models.write().await = Some(models);
 
     info!("账户类型：{}", args.account_type);
     serve(state, args.port).await
+}
+
+/// 获取模型列表，失败时按指数退避重试，全部失败则返回错误
+async fn fetch_models_with_retry(state: &AppState, max_retries: u32) -> Result<crate::copilot::models::ModelsResponse> {
+    let mut last_err = anyhow::anyhow!("未知错误");
+    for attempt in 0..max_retries {
+        if attempt > 0 {
+            // 指数退避：1s、2s、4s …
+            let delay = std::time::Duration::from_secs(1 << (attempt - 1));
+            tracing::warn!("获取模型列表失败，{} 秒后重试（第 {}/{} 次）…", delay.as_secs(), attempt, max_retries - 1);
+            tokio::time::sleep(delay).await;
+        }
+        match get_models(&state.client, state).await {
+            Ok(models) => return Ok(models),
+            Err(e) => last_err = e,
+        }
+    }
+    tracing::error!(
+        "⚠️  获取模型列表连续失败 {} 次，终止启动。\
+         请检查网络是否可达 api.githubcopilot.com，或通过 HTTP_PROXY/HTTPS_PROXY 设置代理。",
+        max_retries
+    );
+    Err(last_err)
 }

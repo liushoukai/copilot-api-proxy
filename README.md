@@ -3,43 +3,74 @@
 English | [中文](./README.zh.md)
 
 A local proxy that wraps GitHub Copilot as a standard **OpenAI / Anthropic**-compatible API.  
-All you need is a GitHub Copilot subscription to call Copilot models via standard API clients.
+All you need is a GitHub Copilot subscription — no extra API key required.
 
-## Features
+---
 
-- OpenAI Chat Completions API compatible (`/v1/chat/completions`)
-- Anthropic Messages API compatible (`/v1/messages`), with streaming support
-- OpenAI Embeddings API compatible (`/v1/embeddings`)
-- Model listing (`/v1/models`)
-- HTTP/HTTPS proxy passthrough via environment variables
+## Quick Start
 
-## Build
+### 1. Authenticate
+
+```bash
+./copilot-api-proxy auth
+```
+
+> First run only. Authorizes via GitHub Device Flow and caches the token locally.
+
+### 2. Start the proxy
+
+```bash
+./copilot-api-proxy start
+```
+
+The proxy is now running at **`http://127.0.0.1:4142`**.
+
+### 3. Configure Claude Code
+
+Open your Claude Code `settings.json` and add:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4142"
+  }
+}
+```
+
+> **Where is `settings.json`?**  
+> macOS: `~/Library/Application Support/Claude/claude_code/settings.json`  
+> Linux: `~/.config/Claude/claude_code/settings.json`
+
+That's it. Start Claude Code and all Anthropic API requests will be routed through your Copilot subscription.
+
+---
+
+## Build from Source
 
 ```bash
 cargo build --release
+# Binary: ./target/release/copilot-api-proxy
 ```
 
-The binary will be at `./target/release/copilot-api-proxy`.
+---
 
-## Usage
+## CLI Reference
 
-### Step 1: Authenticate
-
-On first use, authorize via GitHub Device Flow. The token will be cached locally:
+### `auth`
 
 ```bash
-./target/release/copilot-api-proxy auth
+./copilot-api-proxy auth [flags]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `-f, --force` | Force re-authentication, ignoring cached token |
-| `--show-token` | Print the GitHub Token to terminal after auth |
+| `--show-token` | Print the GitHub Token after auth |
 
-### Step 2: Start the proxy
+### `start`
 
 ```bash
-./target/release/copilot-api-proxy start
+./copilot-api-proxy start [flags]
 ```
 
 | Flag | Default | Description |
@@ -47,10 +78,18 @@ On first use, authorize via GitHub Device Flow. The token will be cached locally
 | `-p, --port` | `4142` | Listening port |
 | `-v, --verbose` | `false` | Enable DEBUG level logging |
 | `-g, --github-token` | — | Provide a GitHub Token directly, skip auth flow |
-| `-a, --account-type` | `individual` | Account type: `individual` / `business` / `enterprise` |
+| `-a, --account-type` | `individual` | `individual` / `business` / `enterprise` |
 | `--show-token` | `false` | Print GitHub Token and Copilot Token on startup |
 
-Once started, the proxy listens at `http://127.0.0.1:4142`.
+---
+
+## Features
+
+- OpenAI Chat Completions API (`/v1/chat/completions`)
+- Anthropic Messages API (`/v1/messages`) with streaming
+- OpenAI Embeddings API (`/v1/embeddings`)
+- Model listing (`/v1/models`)
+- HTTP/HTTPS proxy passthrough via environment variables
 
 ## API Endpoints
 
@@ -62,72 +101,40 @@ Once started, the proxy listens at `http://127.0.0.1:4142`.
 | `POST /v1/embeddings` | OpenAI Embeddings |
 | `POST /v1/messages` | Anthropic Messages API (streaming supported) |
 
-## Examples
+---
 
-### Start with an HTTP proxy
+## More Examples
+
+### Start with an HTTP proxy (required outside mainland China for Claude models)
+
+GitHub Copilot filters available models based on your exit IP. When connecting directly from mainland China, the server omits all `claude-*` models due to Anthropic's regional restrictions. Routing through an overseas proxy restores the full model list.
 
 ```bash
 HTTP_PROXY=http://127.0.0.1:7890 HTTPS_PROXY=http://127.0.0.1:7890 \
-  ./target/release/copilot-api-proxy start --port 4142 --verbose
+  ./copilot-api-proxy start --port 4142 --verbose
 ```
+
+If you start without a proxy and see this warning in the logs:
+
+```
+WARN ⚠️  模型列表中没有 claude-* 模型 ...
+```
+
+it means your current exit IP is in mainland China and Copilot has filtered out Claude models. Set the proxy environment variables and restart.
 
 ### Start with a GitHub Token directly
 
 ```bash
-./target/release/copilot-api-proxy start --github-token ghp_xxxxxxxxxxxx
+./copilot-api-proxy start --github-token ghp_xxxxxxxxxxxx
 ```
 
-### Call Chat Completions
+### Use Claude Code with a one-off environment variable
 
 ```bash
-curl http://127.0.0.1:4142/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": false
-  }'
+ANTHROPIC_BASE_URL=http://127.0.0.1:4142 claude
 ```
-
-### Call Anthropic Messages API
-
-```bash
-curl http://127.0.0.1:4142/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3.5-sonnet",
-    "max_tokens": 1024,
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-### Use with Claude Code
-
-**Option 1: Permanent — via `settings.json`**
-
-Add the following to your Claude Code `settings.json` to redirect all Anthropic API requests to this proxy:
-
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:4142",
-    "ANTHROPIC_API_KEY": "unused"
-  }
-}
-```
-
-**Option 2: One-off — via environment variables**
-
-```bash
-ANTHROPIC_BASE_URL=http://127.0.0.1:4142 ANTHROPIC_API_KEY=unused claude
-```
-
-> **Note:** The proxy must be running before you start Claude Code.  
-> Model names like `claude-sonnet-4-5` will be automatically normalized to a format accepted by Copilot.
 
 ### Use with an OpenAI-compatible client
-
-Set `base_url` to `http://127.0.0.1:4142/v1` and use any string as `api_key`.
 
 ```python
 from openai import OpenAI
@@ -142,4 +149,16 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "Hello!"}],
 )
 print(response.choices[0].message.content)
+```
+
+### Test with curl
+
+```bash
+curl http://127.0.0.1:4142/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-3.5-sonnet",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
 ```

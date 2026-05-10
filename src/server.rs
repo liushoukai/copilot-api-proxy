@@ -74,9 +74,13 @@ async fn chat_completions_handler(
 ) -> Response {
     let is_stream = payload.stream.unwrap_or(false);
 
-    // 规范化模型名，处理带日期后缀等非标准格式
+    // 规范化模型名：基于 Copilot 实际模型列表做动态匹配
     let original_model = payload.model.clone();
-    payload.model = crate::anthropic::translate::normalize_model_pub(&payload.model);
+    let available_models: Vec<String> = state.models.read().await
+        .as_ref()
+        .map(|m| m.data.iter().map(|m| m.id.clone()).collect())
+        .unwrap_or_default();
+    payload.model = crate::anthropic::translate::resolve_model(&payload.model, &available_models);
     if payload.model != original_model {
         info!("chat/completions → model: {} → {}", original_model, payload.model);
     }
@@ -148,8 +152,12 @@ async fn messages_handler(
 ) -> Response {
     let is_stream = payload.stream.unwrap_or(false);
 
-    // 将 Anthropic 请求格式转换为 OpenAI 格式
-    let openai_payload = translate_to_openai(&payload);
+    // 将 Anthropic 请求格式转换为 OpenAI 格式，基于实际模型列表做动态匹配
+    let available_models: Vec<String> = state.models.read().await
+        .as_ref()
+        .map(|m| m.data.iter().map(|m| m.id.clone()).collect())
+        .unwrap_or_default();
+    let openai_payload = translate_to_openai(&payload, &available_models);
     info!("messages → model: {} → {}", payload.model, openai_payload.model);
 
     match create_chat_completions(&state.client, &state, openai_payload).await {

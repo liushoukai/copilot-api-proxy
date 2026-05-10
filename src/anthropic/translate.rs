@@ -11,26 +11,71 @@ use super::types::{
 
 // ── 模型名称规范化 ────────────────────────────────────────────
 
-/// 供外部直接调用的公开版本
-pub fn normalize_model_pub(model: &str) -> String {
-    normalize_model(model)
+/// 基于 Copilot 实际可用模型列表，将请求的模型名映射到最合适的模型 ID。
+///
+/// 匹配策略（按优先级）：
+/// 1. 精确匹配 model_id
+/// 2. 去掉日期后缀后精确匹配
+/// 3. family 匹配（claude-sonnet → 取最新同 family 模型）
+/// 4. 同代降级（haiku → sonnet，同 major 版本）
+/// 5. 从列表中选第一个 claude chat 模型兜底
+/// 6. 若列表为空，返回原始名称不做修改
+pub fn resolve_model<'a>(requested: &str, available: &'a [String]) -> String {
+    if available.is_empty() {
+        return requested.to_string();
+    }
+
+    // 步骤1：精确匹配
+    if available.iter().any(|id| id == requested) {
+        return requested.to_string();
+    }
+
+    // 步骤2：去掉日期后缀后精确匹配（claude-haiku-4-5-20251001 → claude-haiku-4-5）
+    let without_date = strip_date_suffix(requested);
+    if available.iter().any(|id| id == &without_date) {
+        return without_date;
+    }
+
+    // 步骤3：版本点格式匹配（claude-sonnet-4-5 → claude-sonnet-4.5）
+    let dotted = normalize_version(requested);
+    if available.iter().any(|id| id == &dotted) {
+        return dotted.clone();
+    }
+
+    // 步骤4：family + major 匹配，取最新版本
+    // 例：claude-sonnet-4.6 → family="sonnet", major=4，找 claude-sonnet-4.*
+    if let Some(best) = find_by_family_major(&dotted, available) {
+        return best;
+    }
+
+    // 步骤5：haiku 降级到同代 sonnet（claude-haiku-4.5 → claude-sonnet-4.5 或同代 sonnet）
+    if dotted.contains("-haiku-") {
+        let sonnet_name = dotted.replace("-haiku-", "-sonnet-");
+        if let Some(best) = find_by_family_major(&sonnet_name, available) {
+            return best;
+        }
+    }
+
+    // 步骤6：从列表中取第一个 claude chat 模型兜底
+    if let Some(fallback) = available.iter().find(|id| id.starts_with("claude-")) {
+        return fallback.clone();
+    }
+
+    // 步骤7：实在没有合适的，原样返回
+    requested.to_string()
 }
 
-/// Claude Code 会使用多种格式的模型名，统一规范化为 Copilot 支持的格式：
-/// - claude-haiku-4-5-20251001 → claude-sonnet-4.5  （带日期后缀，haiku 降级）
-/// - claude-sonnet-4-5         → claude-sonnet-4.5  （无日期后缀）
-/// - deepseek-* / 其他非 claude → claude-sonnet-4.5  （Copilot 不支持，兜底）
-fn normalize_model(model: &str) -> String {
-    let normalized = normalize_version(model);
-    // 非 claude 系列（如 deepseek、gemini 等）兜底为 claude-sonnet-4.5
-    if !normalized.starts_with("claude-") {
-        return "claude-sonnet-4.5".to_string();
+/// 去掉末尾的日期后缀（纯数字且长度>=6），如 claude-haiku-4-5-20251001 → claude-haiku-4-5
+fn strip_date_suffix(model: &str) -> String {
+    let parts: Vec<&str> = model.split('-').collect();
+    let has_date = parts.last()
+        .map(|p| p.chars().all(|c| c.is_ascii_digit()) && p.len() >= 6)
+        .unwrap_or(false);
+    if has_date && parts.len() > 1 {
+        parts[..parts.len() - 1].join("-")
+    } else {
+        model.to_string()
     }
-    // haiku 系列 Copilot 不支持，降级到同代 sonnet
-    if normalized.starts_with("claude-haiku-") {
-        return normalized.replace("claude-haiku-", "claude-sonnet-");
-    }
-    normalized
 }
 
 /// 将 claude-{family}-{major}-{minor}[-{date}] 转为 claude-{family}-{major}.{minor}
@@ -57,11 +102,35 @@ fn normalize_version(model: &str) -> String {
     format!("{}.{}", prefix, minor)
 }
 
+/// 从 available 列表中找与 model 同 family + major 的最新版本。
+/// 例：dotted="claude-sonnet-4.6"，family="sonnet"，major="4"
+/// 会在列表中找所有 "claude-sonnet-4.*" 并返回最后一个（ID 通常按版本排序）。
+fn find_by_family_major(model: &str, available: &[String]) -> Option<String> {
+    // 解析 claude-{family}-{major}.{minor} 格式
+    let parts: Vec<&str> = model.splitn(2, '-').collect();
+    if parts.len() < 2 || parts[0] != "claude" {
+        return None;
+    }
+    // prefix = "claude-sonnet-4"（取到 major）
+    let prefix = {
+        // 找最后一个 '.' 前的部分作为前缀匹配键
+        let dot_pos = model.rfind('.')?;
+        &model[..dot_pos]
+    };
+
+    let matches: Vec<&String> = available.iter()
+        .filter(|id| id.starts_with(prefix))
+        .collect();
+
+    matches.last().map(|s| (*s).clone())
+}
+
 // ── Anthropic → OpenAI 请求转换 ───────────────────────────────
 
-pub fn translate_to_openai(payload: &MessagesPayload) -> ChatCompletionsPayload {
+/// 将 Anthropic 请求格式转换为 OpenAI 格式，使用 available_models 做动态模型映射
+pub fn translate_to_openai(payload: &MessagesPayload, available_models: &[String]) -> ChatCompletionsPayload {
     ChatCompletionsPayload {
-        model: normalize_model(&payload.model),
+        model: resolve_model(&payload.model, available_models),
         messages: translate_messages(&payload.messages, &payload.system),
         max_tokens: Some(payload.max_tokens),
         stop: payload.stop_sequences.clone().map(Value::from),
@@ -347,4 +416,63 @@ pub fn map_stop_reason(reason: Option<&str>) -> Option<String> {
         "content_filter" => "end_turn",
         _ => "end_turn",
     }.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn models(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_exact_match() {
+        let available = models(&["claude-3.5-sonnet", "claude-3.7-sonnet", "gpt-4o"]);
+        assert_eq!(resolve_model("claude-3.5-sonnet", &available), "claude-3.5-sonnet");
+    }
+
+    #[test]
+    fn test_date_suffix_stripped() {
+        // claude-haiku-4-5-20251001 → 去日期 → claude-haiku-4-5→ 无点格式无精确匹配
+        // → dotted = claude-haiku-4.5 → 无精确匹配 → family+major = claude-haiku-4 → 无
+        // → haiku降级 → claude-sonnet-4.5 → family+major = claude-sonnet-4 → claude-3.5-sonnet 不满足
+        // → fallback 第一个 claude
+        let available = models(&["claude-3.5-sonnet", "gpt-4o"]);
+        let result = resolve_model("claude-haiku-4-5-20251001", &available);
+        assert_eq!(result, "claude-3.5-sonnet");
+    }
+
+    #[test]
+    fn test_dotted_exact_match() {
+        let available = models(&["claude-sonnet-4.5", "claude-sonnet-4.6"]);
+        assert_eq!(resolve_model("claude-sonnet-4-5", &available), "claude-sonnet-4.5");
+    }
+
+    #[test]
+    fn test_family_major_match() {
+        // claude-sonnet-4.6 → prefix=claude-sonnet-4 → 匹配 claude-sonnet-4.5
+        let available = models(&["claude-sonnet-4.5", "gpt-4o"]);
+        assert_eq!(resolve_model("claude-sonnet-4.6", &available), "claude-sonnet-4.5");
+    }
+
+    #[test]
+    fn test_haiku_downgrade() {
+        // haiku-4.5 → sonnet降级 → claude-sonnet-4.5 精确匹配
+        let available = models(&["claude-sonnet-4.5", "gpt-4o"]);
+        assert_eq!(resolve_model("claude-haiku-4.5", &available), "claude-sonnet-4.5");
+    }
+
+    #[test]
+    fn test_empty_list() {
+        assert_eq!(resolve_model("claude-sonnet-4.6", &[]), "claude-sonnet-4.6");
+    }
+
+    #[test]
+    fn test_fallback_first_claude() {
+        let available = models(&["claude-3.5-sonnet", "gpt-4o"]);
+        // 请求一个完全不匹配的型号
+        let result = resolve_model("claude-opus-99.9", &available);
+        assert_eq!(result, "claude-3.5-sonnet");
+    }
 }
