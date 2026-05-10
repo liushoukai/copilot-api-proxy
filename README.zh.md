@@ -80,6 +80,7 @@ cargo build --release
 | `-g, --github-token` | — | 直接传入 GitHub Token，跳过授权流程 |
 | `-a, --account-type` | `individual` | 账户类型：`individual` / `business` / `enterprise` |
 | `--show-token` | `false` | 启动时在终端打印 GitHub Token 和 Copilot Token |
+| `--proxy` | — | HTTP/HTTPS 代理地址，例如 `http://127.0.0.1:7890`。等效于同时设置 `HTTP_PROXY` 和 `HTTPS_PROXY` 环境变量。中国大陆访问 Claude 模型时必须设置。 |
 
 ---
 
@@ -110,8 +111,7 @@ cargo build --release
 GitHub Copilot 会根据请求的出口 IP 返回不同的模型列表。从中国大陆直连时，服务端会因 Anthropic 的地区限制过滤掉所有 `claude-*` 模型；走海外代理后，才能拿到完整列表。
 
 ```bash
-HTTP_PROXY=http://127.0.0.1:7890 HTTPS_PROXY=http://127.0.0.1:7890 \
-  ./copilot-api-proxy start --port 4142 --verbose
+./copilot-api-proxy start --port 4142 --proxy http://127.0.0.1:7890
 ```
 
 如果启动日志中出现以下警告：
@@ -120,9 +120,42 @@ HTTP_PROXY=http://127.0.0.1:7890 HTTPS_PROXY=http://127.0.0.1:7890 \
 WARN ⚠️  模型列表中没有 claude-* 模型 ...
 ```
 
-说明当前出口 IP 位于中国大陆，Copilot 服务端已过滤 Claude 模型。请设置代理环境变量后重新启动。
+说明当前出口 IP 位于中国大陆，Copilot 服务端已过滤 Claude 模型。请加上 `--proxy` 参数后重新启动。
 
-### 直接传入 GitHub Token 启动
+### 使用 PM2 作为守护进程运行
+
+[PM2](https://pm2.keymetrics.io/) 是跨平台进程管理器，支持后台运行、崩溃自动重启和开机自启。
+
+**安装 PM2（一次性）：**
+
+```bash
+npm install -g pm2
+```
+
+**启动守护进程（无需配置文件）：**
+
+```bash
+pm2 start copilot-api-proxy \
+  --name copilot-api-proxy \
+  --restart-delay 3000 \
+  --max-restarts 10 \
+  -- start --port 4142 --proxy http://127.0.0.1:7890
+
+pm2 save
+pm2 startup   # 按照输出的提示执行一条命令，即可实现登录后自动启动
+```
+
+**常用命令：**
+
+```bash
+pm2 status                  # 查看运行状态
+pm2 logs copilot-api-proxy  # 查看日志
+pm2 restart copilot-api-proxy
+pm2 stop copilot-api-proxy
+pm2 delete copilot-api-proxy
+```
+
+
 
 ```bash
 ./copilot-api-proxy start --github-token ghp_xxxxxxxxxxxx

@@ -29,9 +29,20 @@ pub struct StartArgs {
     /// 授权成功后在终端显示 Token
     #[arg(long, default_value_t = false)]
     pub show_token: bool,
+
+    /// HTTP/HTTPS 代理地址，例如 http://127.0.0.1:7890
+    /// 等效于同时设置 HTTP_PROXY 和 HTTPS_PROXY 环境变量
+    #[arg(long)]
+    pub proxy: Option<String>,
 }
 
 pub async fn run(args: &StartArgs) -> Result<()> {
+    // --proxy 参数写入环境变量，后续所有 reqwest::Client 均自动读取
+    if let Some(ref proxy) = args.proxy {
+        set_proxy_env(proxy);
+        info!("代理已设置：{}", proxy);
+    }
+
     // 创建临时 Client 用于启动阶段（此时 state 还未建立）
     // reqwest 默认读取 HTTP_PROXY / HTTPS_PROXY 环境变量
     let bootstrap_client = reqwest::Client::new();
@@ -89,13 +100,22 @@ pub async fn run(args: &StartArgs) -> Result<()> {
         tracing::warn!(
             "⚠️  模型列表中没有 claude-* 模型，Claude Code / Anthropic 请求将无法正常工作。\
              这通常是因为当前出口 IP 位于中国大陆，Copilot 服务端会按地区过滤 Claude 模型。\
-             请通过 HTTP_PROXY/HTTPS_PROXY 环境变量设置海外代理后重新启动。"
+             请通过 --proxy http://127.0.0.1:7890 参数或 HTTP_PROXY/HTTPS_PROXY 环境变量设置海外代理后重新启动。"
         );
     }
     *state.models.write().await = Some(models);
 
     info!("账户类型：{}", args.account_type);
     serve(state, args.port).await
+}
+
+/// 将代理地址写入 HTTP_PROXY / HTTPS_PROXY 环境变量
+fn set_proxy_env(proxy: &str) {
+    // SAFETY: 调用方（run）在单线程启动阶段执行，尚未创建任何子线程
+    unsafe {
+        std::env::set_var("HTTP_PROXY", proxy);
+        std::env::set_var("HTTPS_PROXY", proxy);
+    }
 }
 
 /// 获取模型列表，失败时按指数退避重试，全部失败则返回错误
@@ -119,4 +139,31 @@ async fn fetch_models_with_retry(state: &AppState, max_retries: u32) -> Result<c
         max_retries
     );
     Err(last_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_proxy_env_is_set() {
+        let proxy = "http://127.0.0.1:17890";
+        set_proxy_env(proxy);
+        assert_eq!(std::env::var("HTTP_PROXY").unwrap(), proxy);
+        assert_eq!(std::env::var("HTTPS_PROXY").unwrap(), proxy);
+    }
+
+    #[test]
+    fn test_proxy_arg_is_optional() {
+        // 不传 --proxy 时，已有的环境变量不应被覆盖
+        unsafe {
+            std::env::set_var("HTTP_PROXY", "http://original:8888");
+        }
+        // 模拟 proxy 为 None，不调用 set_proxy_env
+        let proxy: Option<String> = None;
+        if let Some(ref p) = proxy {
+            set_proxy_env(p);
+        }
+        assert_eq!(std::env::var("HTTP_PROXY").unwrap(), "http://original:8888");
+    }
 }

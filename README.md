@@ -80,6 +80,7 @@ cargo build --release
 | `-g, --github-token` | — | Provide a GitHub Token directly, skip auth flow |
 | `-a, --account-type` | `individual` | `individual` / `business` / `enterprise` |
 | `--show-token` | `false` | Print GitHub Token and Copilot Token on startup |
+| `--proxy` | — | HTTP/HTTPS proxy URL, e.g. `http://127.0.0.1:7890`. Equivalent to setting `HTTP_PROXY` and `HTTPS_PROXY` env vars. Required in mainland China to access Claude models. |
 
 ---
 
@@ -110,8 +111,7 @@ cargo build --release
 GitHub Copilot filters available models based on your exit IP. When connecting directly from mainland China, the server omits all `claude-*` models due to Anthropic's regional restrictions. Routing through an overseas proxy restores the full model list.
 
 ```bash
-HTTP_PROXY=http://127.0.0.1:7890 HTTPS_PROXY=http://127.0.0.1:7890 \
-  ./copilot-api-proxy start --port 4142 --verbose
+./copilot-api-proxy start --port 4142 --proxy http://127.0.0.1:7890
 ```
 
 If you start without a proxy and see this warning in the logs:
@@ -120,9 +120,42 @@ If you start without a proxy and see this warning in the logs:
 WARN ⚠️  模型列表中没有 claude-* 模型 ...
 ```
 
-it means your current exit IP is in mainland China and Copilot has filtered out Claude models. Set the proxy environment variables and restart.
+it means your current exit IP is in mainland China and Copilot has filtered out Claude models. Add `--proxy` and restart.
 
-### Start with a GitHub Token directly
+### Run as a daemon with PM2
+
+[PM2](https://pm2.keymetrics.io/) is a cross-platform process manager that keeps the proxy running in the background, restarts it on crash, and can survive reboots.
+
+**Install PM2 (once):**
+
+```bash
+npm install -g pm2
+```
+
+**Start as a daemon (no config file needed):**
+
+```bash
+pm2 start copilot-api-proxy \
+  --name copilot-api-proxy \
+  --restart-delay 3000 \
+  --max-restarts 10 \
+  -- start --port 4142 --proxy http://127.0.0.1:7890
+
+pm2 save
+pm2 startup   # follow the printed instruction to enable boot persistence
+```
+
+**Common commands:**
+
+```bash
+pm2 status                  # check running status
+pm2 logs copilot-api-proxy  # tail logs
+pm2 restart copilot-api-proxy
+pm2 stop copilot-api-proxy
+pm2 delete copilot-api-proxy
+```
+
+
 
 ```bash
 ./copilot-api-proxy start --github-token ghp_xxxxxxxxxxxx
