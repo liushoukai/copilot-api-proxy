@@ -216,39 +216,55 @@ async fn messages_stream_response(upstream_resp: reqwest::Response) -> Response 
     tokio::spawn(async move {
         let mut stream_state = StreamState::new();
 
-        while let Ok(Some(line)) = lines.next_line().await {
-            // SSE 数据行格式：data: {...} 或 data: [DONE]
-            let data = match line.strip_prefix("data: ") {
-                Some(d) => d.trim(),
-                None => continue,
-            };
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    // SSE 数据行格式：data: {...} 或 data: [DONE]
+                    let data = match line.strip_prefix("data: ") {
+                        Some(d) => d.trim(),
+                        None => continue,
+                    };
 
-            if data == "[DONE]" {
-                break;
-            }
-
-            let chunk: ChatCompletionChunk = match serde_json::from_str(data) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("解析 SSE chunk 失败：{} | 原始：{}", e, data);
-                    continue;
-                }
-            };
-
-            let events = translate_chunk(&chunk, &mut stream_state);
-            for event in events {
-                let event_type = event_type_name(&event);
-                let json_data = match serde_json::to_string(&event) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("序列化事件失败：{}", e);
-                        continue;
+                    if data == "[DONE]" {
+                        // MessageStop 已由 translate_chunk 在 finish_reason 时发送，此处只需结束循环
+                        break;
                     }
-                };
-                let sse_line = format!("event: {}\ndata: {}\n\n", event_type, json_data);
-                if tx.send(Ok(axum::body::Bytes::from(sse_line))).await.is_err() {
-                    // 客户端断开连接，停止发送
-                    return;
+
+                    let chunk: ChatCompletionChunk = match serde_json::from_str(data) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("解析 SSE chunk 失败：{} | 原始：{}", e, data);
+                            continue;
+                        }
+                    };
+
+                    let events = translate_chunk(&chunk, &mut stream_state);
+                    for event in events {
+                        let event_type = event_type_name(&event);
+                        let json_data = match serde_json::to_string(&event) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                error!("序列化事件失败：{}", e);
+                                continue;
+                            }
+                        };
+                        let sse_line = format!("event: {}\ndata: {}\n\n", event_type, json_data);
+                        if tx.send(Ok(axum::body::Bytes::from(sse_line))).await.is_err() {
+                            // 客户端断开连接，停止发送
+                            return;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // 上游正常关闭连接，发送终止事件
+                    send_event(&tx, StreamEvent::MessageStop).await;
+                    break;
+                }
+                Err(e) => {
+                    // 上游 IO 错误，发送错误事件后退出
+                    error!("读取上游 SSE 流失败：{}", e);
+                    send_event(&tx, StreamEvent::MessageStop).await;
+                    break;
                 }
             }
         }
@@ -261,6 +277,18 @@ async fn messages_stream_response(upstream_resp: reqwest::Response) -> Response 
     headers.insert("cache-control", HeaderValue::from_static("no-cache"));
     headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
     (headers, body).into_response()
+}
+
+/// 向 channel 发送一个 SSE 事件，发送失败（客户端断开）时静默忽略
+async fn send_event(
+    tx: &tokio::sync::mpsc::Sender<Result<axum::body::Bytes, std::io::Error>>,
+    event: StreamEvent,
+) {
+    let event_type = event_type_name(&event);
+    if let Ok(json_data) = serde_json::to_string(&event) {
+        let sse_line = format!("event: {}\ndata: {}\n\n", event_type, json_data);
+        let _ = tx.send(Ok(axum::body::Bytes::from(sse_line))).await;
+    }
 }
 
 /// 从 StreamEvent 枚举值获取对应的 Anthropic event type 字符串

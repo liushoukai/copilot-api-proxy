@@ -61,8 +61,10 @@ pub async fn setup_copilot_token(state: AppState) -> Result<()> {
     debug!("Copilot Token 获取成功，将在 {}s 后刷新", resp.refresh_in);
     *state.copilot_token.write().await = Some(resp.token);
 
-    // 后台定时刷新
-    let refresh_interval = Duration::from_secs(resp.refresh_in.saturating_sub(60));
+    // 后台定时刷新，每次成功后用最新 refresh_in 动态调整下次间隔
+    // 至少保留 60 秒间隔，防止 refresh_in 异常过小时导致 busy-loop
+    let mut refresh_interval = calc_refresh_interval(resp.refresh_in);
+
     tokio::spawn(async move {
         loop {
             sleep(refresh_interval).await;
@@ -79,8 +81,10 @@ pub async fn setup_copilot_token(state: AppState) -> Result<()> {
             let vscode_version = state.vscode_version.read().await.clone();
             match get_copilot_token(&state.client, &github_token, &vscode_version).await {
                 Ok(resp) => {
+                    // 用新的 refresh_in 更新下次刷新间隔
+                    refresh_interval = Duration::from_secs(resp.refresh_in.saturating_sub(60));
                     *state.copilot_token.write().await = Some(resp.token);
-                    debug!("Copilot Token 刷新成功");
+                    debug!("Copilot Token 刷新成功，下次刷新间隔 {}s", refresh_interval.as_secs());
                 }
                 Err(e) => error!("Copilot Token 刷新失败：{}", e),
             }
@@ -88,6 +92,12 @@ pub async fn setup_copilot_token(state: AppState) -> Result<()> {
     });
 
     Ok(())
+}
+
+/// 计算 Token 刷新间隔，确保至少 60 秒，防止 refresh_in 异常时 busy-loop
+fn calc_refresh_interval(refresh_in: u64) -> Duration {
+    let secs = refresh_in.saturating_sub(60).max(60);
+    Duration::from_secs(secs)
 }
 
 async fn log_user(state: &AppState, github_token: &str) -> Result<()> {
