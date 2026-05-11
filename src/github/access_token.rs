@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::Deserialize;
-use tokio::time::{Duration, sleep};
-use tracing::{debug, error};
+use tokio::time::{Duration, Instant, sleep};
+use tracing::{debug, error, info};
 
 use crate::config::api::{GITHUB_BASE_URL, GITHUB_CLIENT_ID};
 use crate::github::device_code::DeviceCodeResponse;
@@ -21,7 +21,9 @@ pub async fn poll_access_token(
 ) -> Result<String> {
     // 在 interval 基础上额外加 1 秒，避免触发 GitHub 限流
     let sleep_duration = Duration::from_secs(device_code.interval + 1);
-    debug!("轮询 access_token，间隔 {}ms", sleep_duration.as_millis());
+    // 授权码截止时间，超时后不再轮询
+    let deadline = Instant::now() + Duration::from_secs(device_code.expires_in);
+    debug!("轮询 access_token，间隔 {}ms，有效期 {}s", sleep_duration.as_millis(), device_code.expires_in);
 
     let url = format!("{}/login/oauth/access_token", GITHUB_BASE_URL);
     let body = serde_json::json!({
@@ -31,6 +33,14 @@ pub async fn poll_access_token(
     });
 
     loop {
+        // 超过授权码有效期则终止轮询
+        if Instant::now() >= deadline {
+            anyhow::bail!(
+                "Device Flow 授权超时（{}秒内未完成），请重新运行 auth 命令",
+                device_code.expires_in
+            );
+        }
+
         let resp = client
             .post(&url)
             .header("content-type", "application/json")
@@ -71,6 +81,18 @@ pub async fn poll_access_token(
             if !token.is_empty() {
                 return Ok(token);
             }
+        }
+
+        // 授权码已过期，立即终止，无需继续等待
+        if token_resp.error.as_deref() == Some("expired_token") {
+            anyhow::bail!("授权码已过期，请重新运行 auth 命令");
+        }
+
+        // slow_down：GitHub 要求降低轮询频率，额外多等一个间隔
+        if token_resp.error.as_deref() == Some("slow_down") {
+            info!("GitHub 要求降低轮询频率，额外等待 {}s", sleep_duration.as_secs());
+            sleep(sleep_duration * 2).await;
+            continue;
         }
 
         // authorization_pending 表示用户尚未完成授权，继续等待

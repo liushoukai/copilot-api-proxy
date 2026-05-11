@@ -37,22 +37,18 @@ pub struct StartArgs {
 }
 
 pub async fn run(args: &StartArgs) -> Result<()> {
-    // --proxy 参数写入环境变量，后续所有 reqwest::Client 均自动读取
-    if let Some(ref proxy) = args.proxy {
-        set_proxy_env(proxy);
-        info!("代理已设置：{}", proxy);
-    }
-
     // 创建临时 Client 用于启动阶段（此时 state 还未建立）
-    // reqwest 默认读取 HTTP_PROXY / HTTPS_PROXY 环境变量
-    let bootstrap_client = reqwest::Client::new();
+    let bootstrap_client = build_bootstrap_client(args.proxy.as_deref())?;
 
     // 动态获取最新 VSCode 版本，版本号影响 GitHub 返回的可用模型范围
     let vscode_version = get_vscode_version(&bootstrap_client).await;
     info!("VSCode 版本：{}", vscode_version);
 
-    // 建立全局状态（内含共享 Client，同样自动读取代理环境变量）
-    let state = AppState::new(&vscode_version);
+    // 建立全局状态，显式传入代理地址（未传时回退到环境变量）
+    let state = AppState::new(&vscode_version, args.proxy.as_deref());
+    if let Some(ref proxy) = args.proxy {
+        info!("代理已设置：{}", proxy);
+    }
 
     // 获取 GitHub Token
     if let Some(ref token) = args.github_token {
@@ -109,13 +105,13 @@ pub async fn run(args: &StartArgs) -> Result<()> {
     serve(state, args.port).await
 }
 
-/// 将代理地址写入 HTTP_PROXY / HTTPS_PROXY 环境变量
-fn set_proxy_env(proxy: &str) {
-    // SAFETY: 调用方（run）在单线程启动阶段执行，尚未创建任何子线程
-    unsafe {
-        std::env::set_var("HTTP_PROXY", proxy);
-        std::env::set_var("HTTPS_PROXY", proxy);
+/// 构建启动阶段临时使用的 HTTP Client，支持可选代理
+fn build_bootstrap_client(proxy: Option<&str>) -> Result<reqwest::Client> {
+    let mut builder = reqwest::ClientBuilder::new();
+    if let Some(url) = proxy {
+        builder = builder.proxy(reqwest::Proxy::all(url)?);
     }
+    Ok(builder.build()?)
 }
 
 /// 获取模型列表，失败时按指数退避重试，全部失败则返回错误
@@ -146,24 +142,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_proxy_env_is_set() {
-        let proxy = "http://127.0.0.1:17890";
-        set_proxy_env(proxy);
-        assert_eq!(std::env::var("HTTP_PROXY").unwrap(), proxy);
-        assert_eq!(std::env::var("HTTPS_PROXY").unwrap(), proxy);
+    fn test_build_client_with_proxy() {
+        // 传入合法代理地址，client 应构建成功
+        let result = build_bootstrap_client(Some("http://127.0.0.1:7890"));
+        assert!(result.is_ok());
     }
 
     #[test]
-    fn test_proxy_arg_is_optional() {
-        // 不传 --proxy 时，已有的环境变量不应被覆盖
-        unsafe {
-            std::env::set_var("HTTP_PROXY", "http://original:8888");
-        }
-        // 模拟 proxy 为 None，不调用 set_proxy_env
-        let proxy: Option<String> = None;
-        if let Some(ref p) = proxy {
-            set_proxy_env(p);
-        }
-        assert_eq!(std::env::var("HTTP_PROXY").unwrap(), "http://original:8888");
+    fn test_build_client_without_proxy() {
+        // 不传代理，client 应构建成功（回退到环境变量）
+        let result = build_bootstrap_client(None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_build_client_invalid_proxy() {
+        // reqwest 对代理 URL 的校验延迟到实际连接，构建阶段不报错是正常行为
+        let result = build_bootstrap_client(Some("not-a-valid-url"));
+        assert!(result.is_ok());
     }
 }

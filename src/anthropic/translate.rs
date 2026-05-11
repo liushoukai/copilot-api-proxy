@@ -271,7 +271,13 @@ fn translate_assistant_message(content: &Value) -> Vec<Message> {
             role: "assistant".to_string(),
             content: if text.is_empty() { None } else { Some(Value::String(text)) },
             tool_calls: Some(tool_calls.into_iter()
-                .map(|v| serde_json::from_value(v).unwrap())
+                .filter_map(|v| match serde_json::from_value(v.clone()) {
+                    Ok(tc) => Some(tc),
+                    Err(e) => {
+                        tracing::warn!("反序列化 tool_call 失败，已跳过：{} | 原始数据：{}", e, v);
+                        None
+                    }
+                })
                 .collect()),
             ..Default::default()
         }]

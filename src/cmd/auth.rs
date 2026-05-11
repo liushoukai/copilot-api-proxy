@@ -18,7 +18,7 @@ pub struct AuthArgs {
 }
 
 pub async fn run(args: &AuthArgs) -> Result<()> {
-    let state = AppState::new("1.117.0");
+    let state = AppState::new("1.117.0", None);
 
     setup_github_token(&state, args.force).await?;
 
