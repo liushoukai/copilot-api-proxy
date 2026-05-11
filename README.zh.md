@@ -132,15 +132,43 @@ WARN ⚠️  模型列表中没有 claude-* 模型 ...
 npm install -g pm2
 ```
 
-**启动守护进程（无需配置文件）：**
+**方式一 — 命令行启动（快速）：**
 
 ```bash
-pm2 start copilot-api-proxy \
+pm2 start ./copilot-api-proxy \
   --name copilot-api-proxy \
   --restart-delay 3000 \
   --max-restarts 10 \
   -- start --port 4142 --proxy http://127.0.0.1:7890
+```
 
+**方式二 — 配置文件启动（推荐长期使用）：**
+
+在二进制文件同目录下创建 `ecosystem.config.js`：
+
+```js
+module.exports = {
+  apps: [
+    {
+      name: 'copilot-api-proxy',
+      script: './copilot-api-proxy',
+      args: 'start --port 4142 --proxy http://127.0.0.1:7890',
+      restart_delay: 3000,
+      max_restarts: 10,
+    },
+  ],
+};
+```
+
+然后启动：
+
+```bash
+pm2 start ecosystem.config.js
+```
+
+**注册开机自启（两种方式通用）：**
+
+```bash
 pm2 save
 pm2 startup   # 按照输出的提示执行一条命令，即可实现登录后自动启动
 ```

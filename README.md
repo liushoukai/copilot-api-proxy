@@ -132,15 +132,43 @@ it means your current exit IP is in mainland China and Copilot has filtered out 
 npm install -g pm2
 ```
 
-**Start as a daemon (no config file needed):**
+**Option 1 — command line (quick start):**
 
 ```bash
-pm2 start copilot-api-proxy \
+pm2 start ./copilot-api-proxy \
   --name copilot-api-proxy \
   --restart-delay 3000 \
   --max-restarts 10 \
   -- start --port 4142 --proxy http://127.0.0.1:7890
+```
 
+**Option 2 — config file (recommended for permanent setup):**
+
+Create `ecosystem.config.js` in the same directory as the binary:
+
+```js
+module.exports = {
+  apps: [
+    {
+      name: 'copilot-api-proxy',
+      script: './copilot-api-proxy',
+      args: 'start --port 4142 --proxy http://127.0.0.1:7890',
+      restart_delay: 3000,
+      max_restarts: 10,
+    },
+  ],
+};
+```
+
+Then start with:
+
+```bash
+pm2 start ecosystem.config.js
+```
+
+**Register for auto-start on login (both options):**
+
+```bash
 pm2 save
 pm2 startup   # follow the printed instruction to enable boot persistence
 ```
