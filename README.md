@@ -76,6 +76,7 @@ cargo build --release
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-p, --port` | `4142` | Listening port |
+| `--host` | `127.0.0.1` | Listening address. Use `0.0.0.0` to expose to LAN (use with caution) |
 | `-v, --verbose` | `false` | Enable DEBUG level logging |
 | `-g, --github-token` | — | Provide a GitHub Token directly, skip auth flow |
 | `-a, --account-type` | `individual` | `individual` / `business` / `enterprise` |

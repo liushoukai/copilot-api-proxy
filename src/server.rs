@@ -277,11 +277,13 @@ fn event_type_name(event: &StreamEvent) -> &'static str {
     }
 }
 
-pub async fn serve(state: AppState, port: u16) -> Result<()> {
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
+    let addr: SocketAddr = format!("{}:{}", host, port)
+        .parse()
+        .map_err(|e| anyhow::anyhow!("无效的监听地址 {}:{} — {}", host, port, e))?;
     let router = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("服务已启动 → http://127.0.0.1:{}", port);
+    info!("服务已启动 → http://{}:{}", host, port);
     axum::serve(listener, router).await?;
     Ok(())
 }

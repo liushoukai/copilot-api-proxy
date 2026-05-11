@@ -76,6 +76,7 @@ cargo build --release
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `-p, --port` | `4142` | 监听端口 |
+| `--host` | `127.0.0.1` | 监听地址。指定 `0.0.0.0` 可暴露到局域网（注意安全风险） |
 | `-v, --verbose` | `false` | 开启 DEBUG 级别详细日志 |
 | `-g, --github-token` | — | 直接传入 GitHub Token，跳过授权流程 |
 | `-a, --account-type` | `individual` | 账户类型：`individual` / `business` / `enterprise` |

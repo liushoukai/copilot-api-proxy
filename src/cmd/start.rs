@@ -34,6 +34,11 @@ pub struct StartArgs {
     /// 等效于同时设置 HTTP_PROXY 和 HTTPS_PROXY 环境变量
     #[arg(long)]
     pub proxy: Option<String>,
+
+    /// 监听地址，默认只监听本机回环（127.0.0.1）
+    /// 指定 0.0.0.0 可监听所有网络接口（局域网可访问，注意安全）
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
 }
 
 pub async fn run(args: &StartArgs) -> Result<()> {
@@ -102,7 +107,7 @@ pub async fn run(args: &StartArgs) -> Result<()> {
     *state.models.write().await = Some(models);
 
     info!("账户类型：{}", args.account_type);
-    serve(state, args.port).await
+    serve(state, &args.host, args.port).await
 }
 
 /// 构建启动阶段临时使用的 HTTP Client，支持可选代理
