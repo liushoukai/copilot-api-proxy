@@ -85,7 +85,11 @@ pub enum StreamEvent {
         usage: StreamUsage,
     },
     MessageStop,
+    /// Anthropic 协议保留变体，服务端心跳事件
+    #[allow(dead_code)]
     Ping,
+    /// Anthropic 协议保留变体，流式错误事件
+    #[allow(dead_code)]
     Error {
         error: StreamError,
     },
