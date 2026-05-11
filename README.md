@@ -155,6 +155,8 @@ pm2 stop copilot-api-proxy
 pm2 delete copilot-api-proxy
 ```
 
+> **Note:** `pm2 status` shows `N/A` for the version column. This is normal — PM2 reads version from `package.json`, which doesn't exist for a Rust binary. It has no effect on functionality.
+
 
 
 ```bash

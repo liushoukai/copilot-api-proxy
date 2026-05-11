@@ -155,6 +155,8 @@ pm2 stop copilot-api-proxy
 pm2 delete copilot-api-proxy
 ```
 
+> **注意：** `pm2 status` 的版本列显示 `N/A`，这是正常现象。PM2 从 `package.json` 读取版本号，Rust 二进制没有该文件，不影响任何功能。
+
 
 
 ```bash
