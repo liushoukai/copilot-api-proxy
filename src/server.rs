@@ -206,7 +206,12 @@ async fn messages_handler(
     // 从缓存读取模型 ID 列表（Arc clone，无字符串拷贝）
     let available_models = state.model_ids.read().await.clone();
     let openai_payload = translate_to_openai(&payload, &available_models);
-    info!("messages → model: {} → {}", payload.model, openai_payload.model);
+    // 记录转换后转发给 Copilot 的请求体大小
+    if let Ok(forwarded_bytes) = serde_json::to_vec(&openai_payload) {
+        info!("messages → model: {} → {}，转发请求体大小：{}", payload.model, openai_payload.model, format_size(forwarded_bytes.len()));
+    } else {
+        info!("messages → model: {} → {}", payload.model, openai_payload.model);
+    }
 
     // 首次请求，clone 保留用于 401 重试
     let mut upstream_resp = match create_chat_completions(&state.client, &state, openai_payload.clone()).await {
