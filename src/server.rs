@@ -12,6 +12,7 @@ use futures::StreamExt;
 use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
 use tokio_util::io::StreamReader;
+use humansize::{DECIMAL, format_size};
 use tracing::{error, info};
 
 use crate::anthropic::stream::translate_chunk;
@@ -42,17 +43,6 @@ pub fn build_router(state: AppState) -> Router {
     router
 }
 
-/// 将字节数格式化为可读的大小字符串（B / KB / MB）
-fn format_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
-
 /// 中间件：记录所有请求的路径和请求体大小
 async fn log_request_size_middleware(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_owned();
@@ -65,7 +55,7 @@ async fn log_request_size_middleware(req: Request, next: Next) -> Response {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
-    info!("{} {} 请求体大小：{}", method, path, format_size(bytes.len()));
+    info!("{} {} 请求体大小：{}", method, path, format_size(bytes.len(), DECIMAL));
     let req = Request::from_parts(parts, Body::from(bytes));
     next.run(req).await
 }
@@ -208,7 +198,7 @@ async fn messages_handler(
     let openai_payload = translate_to_openai(&payload, &available_models);
     // 记录转换后转发给 Copilot 的请求体大小
     if let Ok(forwarded_bytes) = serde_json::to_vec(&openai_payload) {
-        info!("messages → model: {} → {}，转发请求体大小：{}", payload.model, openai_payload.model, format_size(forwarded_bytes.len()));
+        info!("messages → model: {} → {}，转发请求体大小：{}", payload.model, openai_payload.model, format_size(forwarded_bytes.len(), DECIMAL));
     } else {
         info!("messages → model: {} → {}", payload.model, openai_payload.model);
     }
