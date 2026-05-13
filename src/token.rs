@@ -47,6 +47,22 @@ pub async fn setup_github_token(state: &AppState, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// 主动刷新 Copilot Token，用于 401 错误时立即重试
+pub async fn refresh_copilot_token(state: &AppState) -> Result<()> {
+    let github_token = state
+        .github_token
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("GitHub Token 未设置"))?;
+
+    let vscode_version = state.vscode_version.as_ref();
+    let resp = get_copilot_token(&state.client, &github_token, vscode_version).await?;
+    *state.copilot_token.write().await = Some(resp.token);
+    info!("Copilot Token 主动刷新成功");
+    Ok(())
+}
+
 /// 设置 Copilot Token，并启动后台定时刷新任务
 pub async fn setup_copilot_token(state: AppState) -> Result<()> {
     let github_token = state
@@ -56,8 +72,8 @@ pub async fn setup_copilot_token(state: AppState) -> Result<()> {
         .clone()
         .ok_or_else(|| anyhow::anyhow!("GitHub Token 未设置"))?;
 
-    let vscode_version = state.vscode_version.read().await.clone();
-    let resp = get_copilot_token(&state.client, &github_token, &vscode_version).await?;
+    let vscode_version = state.vscode_version.as_ref();
+    let resp = get_copilot_token(&state.client, &github_token, vscode_version).await?;
     debug!("Copilot Token 获取成功，将在 {}s 后刷新", resp.refresh_in);
     *state.copilot_token.write().await = Some(resp.token);
 
@@ -78,8 +94,8 @@ pub async fn setup_copilot_token(state: AppState) -> Result<()> {
                 }
             };
 
-            let vscode_version = state.vscode_version.read().await.clone();
-            match get_copilot_token(&state.client, &github_token, &vscode_version).await {
+            let vscode_version = state.vscode_version.as_ref();
+            match get_copilot_token(&state.client, &github_token, vscode_version).await {
                 Ok(resp) => {
                     // 用新的 refresh_in 更新下次刷新间隔
                     refresh_interval = Duration::from_secs(resp.refresh_in.saturating_sub(60));

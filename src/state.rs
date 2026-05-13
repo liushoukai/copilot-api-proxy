@@ -14,8 +14,10 @@ pub struct AppState {
     pub copilot_token: Arc<RwLock<Option<String>>>,
     /// 启动时缓存的可用模型列表
     pub models: Arc<RwLock<Option<ModelsResponse>>>,
-    /// 模拟的 VSCode 版本号，用于请求头
-    pub vscode_version: Arc<RwLock<String>>,
+    /// 可用模型 ID 列表缓存（Arc 内层，clone 只增加引用计数，无字符串拷贝）
+    pub model_ids: Arc<RwLock<Arc<Vec<String>>>>,
+    /// 模拟的 VSCode 版本号，启动后不再修改，直接用 Arc 避免锁开销
+    pub vscode_version: Arc<String>,
 }
 
 impl AppState {
@@ -28,7 +30,8 @@ impl AppState {
             github_token: Arc::new(RwLock::new(None)),
             copilot_token: Arc::new(RwLock::new(None)),
             models: Arc::new(RwLock::new(None)),
-            vscode_version: Arc::new(RwLock::new(vscode_version.to_string())),
+            model_ids: Arc::new(RwLock::new(Arc::new(Vec::new()))),
+            vscode_version: Arc::new(vscode_version.to_string()),
         }
     }
 }

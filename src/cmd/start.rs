@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Args;
+use std::sync::Arc;
 use tracing::info;
 
 use crate::copilot::models::get_models;
@@ -104,6 +105,9 @@ pub async fn run(args: &StartArgs) -> Result<()> {
              请通过 --proxy http://127.0.0.1:7890 参数或 HTTP_PROXY/HTTPS_PROXY 环境变量设置海外代理后重新启动。"
         );
     }
+    // 将模型 ID 列表单独缓存为 Arc，后续每次请求 clone Arc 即可，无字符串拷贝
+    let ids: Vec<String> = models.data.iter().map(|m| m.id.clone()).collect();
+    *state.model_ids.write().await = Arc::new(ids);
     *state.models.write().await = Some(models);
 
     info!("账户类型：{}", args.account_type);

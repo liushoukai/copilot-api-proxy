@@ -9,7 +9,7 @@ use crate::state::AppState;
 
 // ── 请求类型 ────────────────────────────────────────────────
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct ChatCompletionsPayload {
     pub messages: Vec<Message>,
     pub model: String,
@@ -30,7 +30,7 @@ pub struct ChatCompletionsPayload {
     pub user: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct Message {
     pub role: String,
     pub content: Option<Value>,
@@ -39,21 +39,21 @@ pub struct Message {
     pub tool_call_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Tool {
     #[serde(rename = "type")]
     pub kind: String,
     pub function: FunctionDef,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FunctionDef {
     pub name: String,
     pub description: Option<String>,
     pub parameters: Value,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ToolCall {
     pub id: String,
     #[serde(rename = "type")]
@@ -61,7 +61,7 @@ pub struct ToolCall {
     pub function: FunctionCall,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FunctionCall {
     pub name: String,
     pub arguments: String,
@@ -120,7 +120,7 @@ pub async fn create_chat_completions(
         .clone()
         .ok_or_else(|| anyhow::anyhow!("Copilot Token 未设置"))?;
 
-    let vscode_version = state.vscode_version.read().await.clone();
+    let vscode_version = state.vscode_version.as_ref();
 
     // 判断是否为 agent 调用（消息中有 assistant / tool 角色）
     let is_agent = payload

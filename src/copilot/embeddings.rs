@@ -47,7 +47,7 @@ pub async fn create_embeddings(
         .clone()
         .ok_or_else(|| anyhow::anyhow!("Copilot Token 未设置"))?;
 
-    let vscode_version = state.vscode_version.read().await.clone();
+    let vscode_version = state.vscode_version.as_ref();
 
     let resp = client
         .post("https://api.githubcopilot.com/embeddings")

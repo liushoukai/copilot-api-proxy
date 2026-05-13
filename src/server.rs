@@ -3,8 +3,9 @@ use std::net::SocketAddr;
 use anyhow::Result;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use futures::StreamExt;
@@ -23,9 +24,10 @@ use crate::copilot::chat::{
 use crate::copilot::embeddings::{EmbeddingRequest, create_embeddings};
 use crate::copilot::models::get_models;
 use crate::state::AppState;
+use crate::token::refresh_copilot_token;
 
 pub fn build_router(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health_handler))
         .route("/models", get(models_handler))
         .route("/chat/completions", post(chat_completions_handler))
@@ -34,7 +36,38 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(chat_completions_handler))
         .route("/v1/embeddings", post(embeddings_handler))
         .route("/v1/messages", post(messages_handler))
-        .with_state(state)
+        .layer(from_fn(log_request_size_middleware))
+        .with_state(state.clone());
+
+    router
+}
+
+/// 将字节数格式化为可读的大小字符串（B / KB / MB）
+fn format_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+/// 中间件：记录所有请求的路径和请求体大小
+async fn log_request_size_middleware(req: Request, next: Next) -> Response {
+    let path = req.uri().path().to_owned();
+    let method = req.method().clone();
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(b) => b,
+        Err(e) => {
+            error!("读取请求体失败：{}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+    info!("{} {} 请求体大小：{}", method, path, format_size(bytes.len()));
+    let req = Request::from_parts(parts, Body::from(bytes));
+    next.run(req).await
 }
 
 async fn health_handler(State(state): State<AppState>) -> Json<Value> {
@@ -74,49 +107,62 @@ async fn chat_completions_handler(
 ) -> Response {
     let is_stream = payload.stream.unwrap_or(false);
 
-    // 规范化模型名：基于 Copilot 实际模型列表做动态匹配
+    // 从缓存读取模型 ID 列表（Arc clone，无字符串拷贝）
+    let available_models = state.model_ids.read().await.clone();
     let original_model = payload.model.clone();
-    let available_models: Vec<String> = state.models.read().await
-        .as_ref()
-        .map(|m| m.data.iter().map(|m| m.id.clone()).collect())
-        .unwrap_or_default();
     payload.model = crate::anthropic::translate::resolve_model(&payload.model, &available_models);
     if payload.model != original_model {
         info!("chat/completions → model: {} → {}", original_model, payload.model);
     }
 
-    match create_chat_completions(&state.client, &state, payload).await {
-        Ok(upstream_resp) => {
-            if !upstream_resp.status().is_success() {
-                let status = upstream_resp.status();
-                let body = upstream_resp.text().await.unwrap_or_default();
-                error!("Copilot chat/completions 返回错误 {}：{}", status, body);
-                return (
-                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-                    body,
-                )
-                    .into_response();
-            }
-
-            if is_stream {
-                // 流式：把 Copilot SSE 字节流直接透传给客户端
-                let mut headers = HeaderMap::new();
-                headers.insert("content-type", HeaderValue::from_static("text/event-stream"));
-                headers.insert("cache-control", HeaderValue::from_static("no-cache"));
-                headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
-                (headers, to_sse_body(upstream_resp)).into_response()
-            } else {
-                match upstream_resp.json::<Value>().await {
-                    Ok(json) => Json(json).into_response(),
-                    Err(e) => {
-                        error!("解析 chat/completions 响应失败：{}", e);
-                        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-                    }
-                }
-            }
-        }
+    // 首次请求，clone 保留用于 401 重试
+    let mut upstream_resp = match create_chat_completions(&state.client, &state, payload.clone()).await {
+        Ok(r) => r,
         Err(e) => {
             error!("chat/completions 请求失败：{}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+
+    // 400/401 时主动刷新 Copilot Token 并重试一次
+    if is_auth_error(upstream_resp.status()) {
+        info!("Copilot Token 认证失败（{}），主动刷新后重试...", upstream_resp.status());
+        if let Err(e) = refresh_copilot_token(&state).await {
+            error!("Copilot Token 刷新失败：{}", e);
+            return (StatusCode::UNAUTHORIZED, upstream_resp.text().await.unwrap_or_default()).into_response();
+        }
+        upstream_resp = match create_chat_completions(&state.client, &state, payload).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!("chat/completions 重试请求失败：{}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            }
+        };
+    }
+
+    if !upstream_resp.status().is_success() {
+        let status = upstream_resp.status();
+        let body = upstream_resp.text().await.unwrap_or_default();
+        error!("Copilot chat/completions 返回错误 {}：{}", status, body);
+        return (
+            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+            body,
+        ).into_response();
+    }
+
+    if is_stream {
+        // 流式：把 Copilot SSE 字节流直接透传给客户端
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("text/event-stream"));
+        headers.insert("cache-control", HeaderValue::from_static("no-cache"));
+        headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
+        return (headers, to_sse_body(upstream_resp)).into_response();
+    }
+
+    match upstream_resp.json::<Value>().await {
+        Ok(json) => Json(json).into_response(),
+        Err(e) => {
+            error!("解析 chat/completions 响应失败：{}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
@@ -133,6 +179,11 @@ async fn embeddings_handler(
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
+}
+
+/// 400（token 格式异常）和 401（token 过期）均视为认证错误，触发主动刷新重试
+fn is_auth_error(status: StatusCode) -> bool {
+    status == StatusCode::UNAUTHORIZED || status == StatusCode::BAD_REQUEST
 }
 
 fn model_to_json(m: &crate::copilot::models::Model) -> Value {
@@ -152,39 +203,51 @@ async fn messages_handler(
 ) -> Response {
     let is_stream = payload.stream.unwrap_or(false);
 
-    // 将 Anthropic 请求格式转换为 OpenAI 格式，基于实际模型列表做动态匹配
-    let available_models: Vec<String> = state.models.read().await
-        .as_ref()
-        .map(|m| m.data.iter().map(|m| m.id.clone()).collect())
-        .unwrap_or_default();
+    // 从缓存读取模型 ID 列表（Arc clone，无字符串拷贝）
+    let available_models = state.model_ids.read().await.clone();
     let openai_payload = translate_to_openai(&payload, &available_models);
     info!("messages → model: {} → {}", payload.model, openai_payload.model);
 
-    match create_chat_completions(&state.client, &state, openai_payload).await {
-        Ok(upstream_resp) => {
-            if !upstream_resp.status().is_success() {
-                let status = upstream_resp.status();
-                let body = upstream_resp.text().await.unwrap_or_default();
-                // 400 时打印原始 Anthropic 请求体，方便定位字段问题
-                error!("Copilot chat/completions 返回错误 {}：{}", status, body);
-                error!("原始请求体：{}", serde_json::to_string(&payload).unwrap_or_default());
-                return (
-                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-                    body,
-                ).into_response();
-            }
-
-            if is_stream {
-                messages_stream_response(upstream_resp).await
-            } else {
-                messages_non_stream_response(upstream_resp).await
-            }
-        }
+    // 首次请求，clone 保留用于 401 重试
+    let mut upstream_resp = match create_chat_completions(&state.client, &state, openai_payload.clone()).await {
+        Ok(r) => r,
         Err(e) => {
             error!("messages 请求失败：{}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
+    };
+
+    // 400/401 时主动刷新 Copilot Token 并重试一次
+    if is_auth_error(upstream_resp.status()) {
+        info!("Copilot Token 认证失败（{}），主动刷新后重试...", upstream_resp.status());
+        if let Err(e) = refresh_copilot_token(&state).await {
+            error!("Copilot Token 刷新失败：{}", e);
+            return (StatusCode::UNAUTHORIZED, upstream_resp.text().await.unwrap_or_default()).into_response();
+        }
+        upstream_resp = match create_chat_completions(&state.client, &state, openai_payload).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!("messages 重试请求失败：{}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            }
+        };
     }
+
+    if !upstream_resp.status().is_success() {
+        let status = upstream_resp.status();
+        let body = upstream_resp.text().await.unwrap_or_default();
+        error!("Copilot chat/completions 返回错误 {}：{}", status, body);
+        return (
+            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+            body,
+        ).into_response();
+    }
+
+    if is_stream {
+        return messages_stream_response(upstream_resp).await;
+    }
+
+    messages_non_stream_response(upstream_resp).await
 }
 
 /// 非流式：将 OpenAI 响应解析后转换为 Anthropic MessagesResponse
@@ -304,6 +367,7 @@ fn event_type_name(event: &StreamEvent) -> &'static str {
         StreamEvent::Error { .. } => "error",
     }
 }
+
 
 pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", host, port)

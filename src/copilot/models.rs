@@ -69,7 +69,7 @@ pub async fn get_models(client: &reqwest::Client, state: &AppState) -> Result<Mo
         .clone()
         .ok_or_else(|| anyhow::anyhow!("Copilot Token 未设置"))?;
 
-    let vscode_version = state.vscode_version.read().await.clone();
+    let vscode_version = state.vscode_version.as_ref();
 
     let resp = client
         .get("https://api.githubcopilot.com/models")
