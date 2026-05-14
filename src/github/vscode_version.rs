@@ -8,13 +8,10 @@ const FALLBACK_VERSION: &str = "1.117.0";
 /// 获取失败时返回兜底版本，不影响启动流程
 pub async fn get_vscode_version(client: &reqwest::Client) -> String {
     let result = fetch_version(client).await;
-    match result {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("获取 VSCode 版本失败，使用兜底版本 {}：{}", FALLBACK_VERSION, e);
-            FALLBACK_VERSION.to_string()
-        }
-    }
+    result.unwrap_or_else(|e| {
+        warn!("获取 VSCode 版本失败，使用兜底版本 {}：{}", FALLBACK_VERSION, e);
+        FALLBACK_VERSION.to_string()
+    })
 }
 
 async fn fetch_version(client: &reqwest::Client) -> anyhow::Result<String> {
