@@ -74,7 +74,7 @@ pub async fn setup_copilot_token(state: AppState) -> Result<()> {
 
     let vscode_version = state.vscode_version.as_ref();
     let resp = get_copilot_token(&state.client, &github_token, vscode_version).await?;
-    debug!("Copilot Token 获取成功，将在 {}s 后刷新", resp.refresh_in);
+    info!("Copilot Token 获取成功，将在 {}s 后刷新", resp.refresh_in);
     *state.copilot_token.write().await = Some(resp.token);
 
     // 后台定时刷新，每次成功后用最新 refresh_in 动态调整下次间隔
@@ -84,7 +84,7 @@ pub async fn setup_copilot_token(state: AppState) -> Result<()> {
     tokio::spawn(async move {
         loop {
             sleep(refresh_interval).await;
-            debug!("开始刷新 Copilot Token...");
+            info!("开始刷新 Copilot Token...");
 
             let github_token = match state.github_token.read().await.clone() {
                 Some(t) => t,
@@ -100,7 +100,7 @@ pub async fn setup_copilot_token(state: AppState) -> Result<()> {
                     // 用新的 refresh_in 更新下次刷新间隔
                     refresh_interval = Duration::from_secs(resp.refresh_in.saturating_sub(60));
                     *state.copilot_token.write().await = Some(resp.token);
-                    debug!("Copilot Token 刷新成功，下次刷新间隔 {}s", refresh_interval.as_secs());
+                    info!("Copilot Token 刷新成功，下次刷新间隔 {}s", refresh_interval.as_secs());
                 }
                 Err(e) => error!("Copilot Token 刷新失败：{}", e),
             }
