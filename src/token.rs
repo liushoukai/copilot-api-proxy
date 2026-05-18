@@ -1,7 +1,7 @@
 use anyhow::Result;
 use tokio::fs;
 use tokio::time::{Duration, sleep};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use crate::config::paths::{ensure_paths, github_token_path};
 use crate::github::access_token::poll_access_token;

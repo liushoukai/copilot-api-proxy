@@ -9,6 +9,7 @@ use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use futures::StreamExt;
+use jsonpath_rust::{JsonPath, JsonPathValue};
 use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
 use tokio_util::io::StreamReader;
@@ -28,7 +29,7 @@ use crate::state::AppState;
 use crate::token::refresh_copilot_token;
 
 pub fn build_router(state: AppState) -> Router {
-    let router = Router::new()
+    Router::new()
         .route("/health", get(health_handler))
         .route("/models", get(models_handler))
         .route("/chat/completions", post(chat_completions_handler))
@@ -38,9 +39,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/embeddings", post(embeddings_handler))
         .route("/v1/messages", post(messages_handler))
         .layer(from_fn(log_request_size_middleware))
-        .with_state(state.clone());
-
-    router
+        .with_state(state.clone())
 }
 
 /// 中间件：记录所有请求的路径和请求体大小
@@ -48,6 +47,7 @@ async fn log_request_size_middleware(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_owned();
     let method = req.method().clone();
     let (parts, body) = req.into_parts();
+
     let bytes = match axum::body::to_bytes(body, usize::MAX).await {
         Ok(b) => b,
         Err(e) => {
@@ -105,48 +105,14 @@ async fn chat_completions_handler(
         info!("chat/completions → model: {} → {}", original_model, payload.model);
     }
 
-    // 首次请求，clone 保留用于 401 重试
-    let mut upstream_resp = match create_chat_completions(&state.client, &state, payload.clone()).await {
+    let upstream_resp = match create_with_retry(&state, payload, "chat/completions").await {
         Ok(r) => r,
-        Err(e) => {
-            error!("chat/completions 请求失败：{}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
+        Err(e) => return e,
     };
-
-    // 400/401 时主动刷新 Copilot Token 并重试一次
-    if is_auth_error(upstream_resp.status()) {
-        info!("Copilot Token 认证失败（{}），主动刷新后重试...", upstream_resp.status());
-        if let Err(e) = refresh_copilot_token(&state).await {
-            error!("Copilot Token 刷新失败：{}", e);
-            return (StatusCode::UNAUTHORIZED, upstream_resp.text().await.unwrap_or_default()).into_response();
-        }
-        upstream_resp = match create_chat_completions(&state.client, &state, payload).await {
-            Ok(r) => r,
-            Err(e) => {
-                error!("chat/completions 重试请求失败：{}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-            }
-        };
-    }
-
-    if !upstream_resp.status().is_success() {
-        let status = upstream_resp.status();
-        let body = upstream_resp.text().await.unwrap_or_default();
-        error!("Copilot chat/completions 返回错误 {}：{}", status, body);
-        return (
-            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-            body,
-        ).into_response();
-    }
 
     if is_stream {
         // 流式：把 Copilot SSE 字节流直接透传给客户端
-        let mut headers = HeaderMap::new();
-        headers.insert("content-type", HeaderValue::from_static("text/event-stream"));
-        headers.insert("cache-control", HeaderValue::from_static("no-cache"));
-        headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
-        return (headers, to_sse_body(upstream_resp)).into_response();
+        return (sse_headers(), to_sse_body(upstream_resp)).into_response();
     }
 
     match upstream_resp.json::<Value>().await {
@@ -176,6 +142,57 @@ fn is_auth_error(status: StatusCode) -> bool {
     status == StatusCode::UNAUTHORIZED || status == StatusCode::BAD_REQUEST
 }
 
+/// 向上游发送请求，认证失败时刷新 Token 并重试一次
+async fn create_with_retry(
+    state: &AppState,
+    payload: ChatCompletionsPayload,
+    tag: &str,
+) -> Result<reqwest::Response, Response> {
+    let mut resp = match create_chat_completions(&state.client, state, payload.clone()).await {
+        Ok(r) => r,
+        Err(e) => {
+            error!("{} 请求失败：{}", tag, e);
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response());
+        }
+    };
+
+    if is_auth_error(resp.status()) {
+        info!("Copilot Token 认证失败（{}），主动刷新后重试...", resp.status());
+        if let Err(e) = refresh_copilot_token(state).await {
+            error!("Copilot Token 刷新失败：{}", e);
+            return Err((StatusCode::UNAUTHORIZED, resp.text().await.unwrap_or_default()).into_response());
+        }
+        resp = match create_chat_completions(&state.client, state, payload).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!("{} 重试请求失败：{}", tag, e);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response());
+            }
+        };
+    }
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        error!("Copilot {} 返回错误 {}：{}", tag, status, body);
+        return Err((
+            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+            body,
+        ).into_response());
+    }
+
+    Ok(resp)
+}
+
+/// 构建 SSE 流式响应头
+fn sse_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", HeaderValue::from_static("text/event-stream"));
+    headers.insert("cache-control", HeaderValue::from_static("no-cache"));
+    headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
+    headers
+}
+
 fn model_to_json(m: &crate::copilot::models::Model) -> Value {
     json!({
         "id": m.id,
@@ -195,6 +212,22 @@ async fn messages_handler(
 
     // 从缓存读取模型 ID 列表（Arc clone，无字符串拷贝）
     let available_models = state.model_ids.read().await.clone();
+
+    // 提取 system 数组中以 x-anthropic-billing-header 开头的 text 字段
+    if let Some(ref sys) = payload.system {
+        if let Ok(path) = JsonPath::try_from("$[?(@.type=='text')].text") {
+            for item in path.find_slice(sys) {
+                if let JsonPathValue::Slice(v, _) = item {
+                    if let Some(s) = v.as_str() {
+                        if s.starts_with("x-anthropic-billing-header") {
+                            info!("x-anthropic-billing-header: {}", s);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let openai_payload = translate_to_openai(&payload, &available_models);
     // 记录转换后转发给 Copilot 的请求体大小
     if let Ok(forwarded_bytes) = serde_json::to_vec(&openai_payload) {
@@ -203,40 +236,10 @@ async fn messages_handler(
         info!("messages → model: {} → {}", payload.model, openai_payload.model);
     }
 
-    // 首次请求，clone 保留用于 401 重试
-    let mut upstream_resp = match create_chat_completions(&state.client, &state, openai_payload.clone()).await {
+    let upstream_resp = match create_with_retry(&state, openai_payload, "messages").await {
         Ok(r) => r,
-        Err(e) => {
-            error!("messages 请求失败：{}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
+        Err(e) => return e,
     };
-
-    // 400/401 时主动刷新 Copilot Token 并重试一次
-    if is_auth_error(upstream_resp.status()) {
-        info!("Copilot Token 认证失败（{}），主动刷新后重试...", upstream_resp.status());
-        if let Err(e) = refresh_copilot_token(&state).await {
-            error!("Copilot Token 刷新失败：{}", e);
-            return (StatusCode::UNAUTHORIZED, upstream_resp.text().await.unwrap_or_default()).into_response();
-        }
-        upstream_resp = match create_chat_completions(&state.client, &state, openai_payload).await {
-            Ok(r) => r,
-            Err(e) => {
-                error!("messages 重试请求失败：{}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-            }
-        };
-    }
-
-    if !upstream_resp.status().is_success() {
-        let status = upstream_resp.status();
-        let body = upstream_resp.text().await.unwrap_or_default();
-        error!("Copilot chat/completions 返回错误 {}：{}", status, body);
-        return (
-            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-            body,
-        ).into_response();
-    }
 
     if is_stream {
         return messages_stream_response(upstream_resp).await;
@@ -330,11 +333,7 @@ async fn messages_stream_response(upstream_resp: reqwest::Response) -> Response 
 
     // 将 channel 转换为 axum Body
     let body = Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
-    let mut headers = HeaderMap::new();
-    headers.insert("content-type", HeaderValue::from_static("text/event-stream"));
-    headers.insert("cache-control", HeaderValue::from_static("no-cache"));
-    headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
-    (headers, body).into_response()
+    (sse_headers(), body).into_response()
 }
 
 /// 向 channel 发送一个 SSE 事件，发送失败（客户端断开）时静默忽略
