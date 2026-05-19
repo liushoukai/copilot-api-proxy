@@ -1,3 +1,3 @@
 #!/bin/bash
 
-cargo release patch --no-publish 
+cargo release patch --no-publish
