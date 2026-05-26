@@ -1,6 +1,6 @@
 [package]
 name = "copilot-api-proxy"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2024"
 description = "A local proxy that exposes GitHub Copilot as OpenAI and Anthropic compatible APIs."
 license = "MIT"
