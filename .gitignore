@@ -10,3 +10,5 @@ ecosystem.config.js
 # Claude Code 配置，仅保留项目级设置
 .claude/*
 !.claude/settings.json
+/.codegraph/
+/.cursor/
