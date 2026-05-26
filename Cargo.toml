@@ -8,6 +8,12 @@ readme = "README.md"
 repository = "https://github.com/liushoukai/copilot-api-proxy"
 keywords = ["copilot", "proxy", "openai", "anthropic"]
 categories = ["command-line-utilities", "web-programming::http-server"]
+exclude = [
+    "/.codegraph",
+    "/.codebase-memory",
+    "/.cursor",
+    "/Cargo.toml.orig",
+]
 
 [[bin]]
 name = "copilot-api-proxy"
