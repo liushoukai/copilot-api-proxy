@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 pub mod auth;
 pub mod start;
 
-/// copilot-api-proxy：GitHub Copilot API 代理工具
+/// copilot-api-proxy: GitHub Copilot API proxy tool
 #[derive(Parser)]
 #[command(name = "copilot-api-proxy", version, about, long_about = None)]
 pub struct Cli {
@@ -13,9 +13,9 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// 执行 GitHub Device Flow 授权，获取并缓存 Access Token
+    /// Run GitHub Device Flow authorization and cache the resulting Access Token
     Auth(auth::AuthArgs),
 
-    /// 启动 Copilot API 代理服务
+    /// Start the Copilot API proxy server
     Start(start::StartArgs),
 }

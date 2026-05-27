@@ -9,19 +9,19 @@ use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use futures::StreamExt;
+use humansize::{DECIMAL, format_size};
 use jsonpath_rust::{JsonPath, JsonPathValue};
 use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
 use tokio_util::io::StreamReader;
-use humansize::{DECIMAL, format_size};
 use tracing::{error, info};
 
 use crate::anthropic::stream::translate_chunk;
 use crate::anthropic::translate::{translate_to_anthropic, translate_to_openai};
 use crate::anthropic::types::{MessagesPayload, StreamEvent, StreamState};
 use crate::copilot::chat::{
-    ChatCompletionChunk, ChatCompletionResponse, ChatCompletionsPayload,
-    create_chat_completions, to_sse_body,
+    ChatCompletionChunk, ChatCompletionResponse, ChatCompletionsPayload, create_chat_completions,
+    to_sse_body,
 };
 use crate::copilot::embeddings::{EmbeddingRequest, create_embeddings};
 use crate::copilot::models::get_models;
@@ -42,7 +42,7 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state.clone())
 }
 
-/// 中间件：记录所有请求的路径和请求体大小
+/// Middleware that logs each request path and body size.
 async fn log_request_size_middleware(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_owned();
     let method = req.method().clone();
@@ -51,11 +51,16 @@ async fn log_request_size_middleware(req: Request, next: Next) -> Response {
     let bytes = match axum::body::to_bytes(body, usize::MAX).await {
         Ok(b) => b,
         Err(e) => {
-            error!("读取请求体失败：{}", e);
+            error!("Failed to read request body: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
-    info!("{} {} 请求体大小：{}", method, path, format_size(bytes.len(), DECIMAL));
+    info!(
+        "{} {} request body size: {}",
+        method,
+        path,
+        format_size(bytes.len(), DECIMAL)
+    );
     let req = Request::from_parts(parts, Body::from(bytes));
     next.run(req).await
 }
@@ -69,7 +74,7 @@ async fn health_handler(State(state): State<AppState>) -> Json<Value> {
 }
 
 async fn models_handler(State(state): State<AppState>) -> Response {
-    // 优先使用启动时缓存的模型列表
+    // Prefer the model list cached at startup.
     {
         let cached = state.models.read().await;
         if let Some(ref models_resp) = *cached {
@@ -78,14 +83,14 @@ async fn models_handler(State(state): State<AppState>) -> Response {
         }
     }
 
-    // 缓存不存在时兜底实时请求
+    // Fall back to a live request when the cache is empty.
     match get_models(&state.client, &state).await {
         Ok(resp) => {
             let data: Vec<Value> = resp.data.iter().map(model_to_json).collect();
             Json(json!({ "object": "list", "data": data })).into_response()
         }
         Err(e) => {
-            error!("获取模型列表失败：{}", e);
+            error!("Failed to fetch model list: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
@@ -97,12 +102,15 @@ async fn chat_completions_handler(
 ) -> Response {
     let is_stream = payload.stream.unwrap_or(false);
 
-    // 从缓存读取模型 ID 列表（Arc clone，无字符串拷贝）
+    // Read model IDs from cache. Arc clone avoids string copies.
     let available_models = state.model_ids.read().await.clone();
     let original_model = payload.model.clone();
     payload.model = crate::anthropic::translate::resolve_model(&payload.model, &available_models);
     if payload.model != original_model {
-        info!("chat/completions → model: {} → {}", original_model, payload.model);
+        info!(
+            "chat/completions → model: {} → {}",
+            original_model, payload.model
+        );
     }
 
     let upstream_resp = match create_with_retry(&state, payload, "chat/completions").await {
@@ -111,14 +119,14 @@ async fn chat_completions_handler(
     };
 
     if is_stream {
-        // 流式：把 Copilot SSE 字节流直接透传给客户端
+        // Streaming mode: pass the Copilot SSE byte stream through to the client.
         return (sse_headers(), to_sse_body(upstream_resp)).into_response();
     }
 
     match upstream_resp.json::<Value>().await {
         Ok(json) => Json(json).into_response(),
         Err(e) => {
-            error!("解析 chat/completions 响应失败：{}", e);
+            error!("Failed to parse chat/completions response: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
@@ -131,18 +139,18 @@ async fn embeddings_handler(
     match create_embeddings(&state.client, &state, payload).await {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => {
-            error!("embeddings 请求失败：{}", e);
+            error!("Embeddings request failed: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
 }
 
-/// 400（token 格式异常）和 401（token 过期）均视为认证错误，触发主动刷新重试
+/// Treat both 400 (invalid token format) and 401 (expired token) as auth errors for proactive refresh.
 fn is_auth_error(status: StatusCode) -> bool {
     status == StatusCode::UNAUTHORIZED || status == StatusCode::BAD_REQUEST
 }
 
-/// 向上游发送请求，认证失败时刷新 Token 并重试一次
+/// Send an upstream request; refresh the token and retry once on authentication failure.
 async fn create_with_retry(
     state: &AppState,
     payload: ChatCompletionsPayload,
@@ -151,21 +159,28 @@ async fn create_with_retry(
     let mut resp = match create_chat_completions(&state.client, state, payload.clone()).await {
         Ok(r) => r,
         Err(e) => {
-            error!("{} 请求失败：{}", tag, e);
+            error!("{} request failed: {}", tag, e);
             return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response());
         }
     };
 
     if is_auth_error(resp.status()) {
-        info!("Copilot Token 认证失败（{}），主动刷新后重试...", resp.status());
+        info!(
+            "Copilot Token authentication failed ({}); refreshing and retrying...",
+            resp.status()
+        );
         if let Err(e) = refresh_copilot_token(state).await {
-            error!("Copilot Token 刷新失败：{}", e);
-            return Err((StatusCode::UNAUTHORIZED, resp.text().await.unwrap_or_default()).into_response());
+            error!("Failed to refresh Copilot Token: {}", e);
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                resp.text().await.unwrap_or_default(),
+            )
+                .into_response());
         }
         resp = match create_chat_completions(&state.client, state, payload).await {
             Ok(r) => r,
             Err(e) => {
-                error!("{} 重试请求失败：{}", tag, e);
+                error!("{} retry request failed: {}", tag, e);
                 return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response());
             }
         };
@@ -174,20 +189,24 @@ async fn create_with_retry(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        error!("Copilot {} 返回错误 {}：{}", tag, status, body);
+        error!("Copilot {} returned error {}: {}", tag, status, body);
         return Err((
             StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
             body,
-        ).into_response());
+        )
+            .into_response());
     }
 
     Ok(resp)
 }
 
-/// 构建 SSE 流式响应头
+/// Build SSE streaming response headers.
 fn sse_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
-    headers.insert("content-type", HeaderValue::from_static("text/event-stream"));
+    headers.insert(
+        "content-type",
+        HeaderValue::from_static("text/event-stream"),
+    );
     headers.insert("cache-control", HeaderValue::from_static("no-cache"));
     headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
     headers
@@ -203,17 +222,17 @@ fn model_to_json(m: &crate::copilot::models::Model) -> Value {
     })
 }
 
-/// Anthropic Messages API 处理器，将请求翻译后转发给 Copilot，再将响应翻译回 Anthropic 格式
+/// Anthropic Messages API handler; translates requests to Copilot and responses back to Anthropic.
 async fn messages_handler(
     State(state): State<AppState>,
     Json(payload): Json<MessagesPayload>,
 ) -> Response {
     let is_stream = payload.stream.unwrap_or(false);
 
-    // 从缓存读取模型 ID 列表（Arc clone，无字符串拷贝）
+    // Read model IDs from cache. Arc clone avoids string copies.
     let available_models = state.model_ids.read().await.clone();
 
-    // 提取 system 数组中以 x-anthropic-billing-header 开头的 text 字段
+    // Extract text fields that start with x-anthropic-billing-header from the system array.
     if let Some(ref sys) = payload.system {
         if let Ok(path) = JsonPath::try_from("$[?(@.type=='text')].text") {
             for item in path.find_slice(sys) {
@@ -229,11 +248,19 @@ async fn messages_handler(
     }
 
     let openai_payload = translate_to_openai(&payload, &available_models);
-    // 记录转换后转发给 Copilot 的请求体大小
+    // Log the forwarded request body size after translation.
     if let Ok(forwarded_bytes) = serde_json::to_vec(&openai_payload) {
-        info!("messages → model: {} → {}，转发请求体大小：{}", payload.model, openai_payload.model, format_size(forwarded_bytes.len(), DECIMAL));
+        info!(
+            "messages → model: {} → {}; forwarded request body size: {}",
+            payload.model,
+            openai_payload.model,
+            format_size(forwarded_bytes.len(), DECIMAL)
+        );
     } else {
-        info!("messages → model: {} → {}", payload.model, openai_payload.model);
+        info!(
+            "messages → model: {} → {}",
+            payload.model, openai_payload.model
+        );
     }
 
     let upstream_resp = match create_with_retry(&state, openai_payload, "messages").await {
@@ -248,7 +275,7 @@ async fn messages_handler(
     messages_non_stream_response(upstream_resp).await
 }
 
-/// 非流式：将 OpenAI 响应解析后转换为 Anthropic MessagesResponse
+/// Non-streaming mode: parse the OpenAI response and convert it to Anthropic MessagesResponse.
 async fn messages_non_stream_response(upstream_resp: reqwest::Response) -> Response {
     match upstream_resp.json::<ChatCompletionResponse>().await {
         Ok(openai_resp) => {
@@ -256,45 +283,45 @@ async fn messages_non_stream_response(upstream_resp: reqwest::Response) -> Respo
             Json(anthropic_resp).into_response()
         }
         Err(e) => {
-            error!("解析 chat/completions 响应失败：{}", e);
+            error!("Failed to parse chat/completions response: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
 }
 
-/// 流式：逐行读取 OpenAI SSE，翻译为 Anthropic SSE 事件，写入输出流
+/// Streaming mode: read OpenAI SSE lines, translate them to Anthropic SSE events, and write to the output stream.
 async fn messages_stream_response(upstream_resp: reqwest::Response) -> Response {
-    // reqwest 字节流 → AsyncRead → 逐行读取
-    let byte_stream = upstream_resp.bytes_stream().map(|r| {
-        r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-    });
+    // Convert the reqwest byte stream to AsyncRead, then read it line by line.
+    let byte_stream = upstream_resp
+        .bytes_stream()
+        .map(|r| r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
     let stream_reader = StreamReader::new(byte_stream);
     let mut lines = tokio::io::BufReader::new(stream_reader).lines();
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(64);
 
-    // 后台任务：翻译并写入 channel
+    // Background task: translate events and write them into the channel.
     tokio::spawn(async move {
         let mut stream_state = StreamState::new();
 
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) => {
-                    // SSE 数据行格式：data: {...} 或 data: [DONE]
+                    // SSE data line format: data: {...} or data: [DONE]
                     let data = match line.strip_prefix("data: ") {
                         Some(d) => d.trim(),
                         None => continue,
                     };
 
                     if data == "[DONE]" {
-                        // MessageStop 已由 translate_chunk 在 finish_reason 时发送，此处只需结束循环
+                        // MessageStop is emitted by translate_chunk on finish_reason; only stop the loop here.
                         break;
                     }
 
                     let chunk: ChatCompletionChunk = match serde_json::from_str(data) {
                         Ok(c) => c,
                         Err(e) => {
-                            error!("解析 SSE chunk 失败：{} | 原始：{}", e, data);
+                            error!("Failed to parse SSE chunk: {} | raw: {}", e, data);
                             continue;
                         }
                     };
@@ -305,25 +332,29 @@ async fn messages_stream_response(upstream_resp: reqwest::Response) -> Response 
                         let json_data = match serde_json::to_string(&event) {
                             Ok(s) => s,
                             Err(e) => {
-                                error!("序列化事件失败：{}", e);
+                                error!("Failed to serialize event: {}", e);
                                 continue;
                             }
                         };
                         let sse_line = format!("event: {}\ndata: {}\n\n", event_type, json_data);
-                        if tx.send(Ok(axum::body::Bytes::from(sse_line))).await.is_err() {
-                            // 客户端断开连接，停止发送
+                        if tx
+                            .send(Ok(axum::body::Bytes::from(sse_line)))
+                            .await
+                            .is_err()
+                        {
+                            // Client disconnected; stop sending.
                             return;
                         }
                     }
                 }
                 Ok(None) => {
-                    // 上游正常关闭连接，发送终止事件
+                    // Upstream closed normally; send the terminal event.
                     send_event(&tx, StreamEvent::MessageStop).await;
                     break;
                 }
                 Err(e) => {
-                    // 上游 IO 错误，发送错误事件后退出
-                    error!("读取上游 SSE 流失败：{}", e);
+                    // Upstream IO error; send the terminal event and exit.
+                    error!("Failed to read upstream SSE stream: {}", e);
                     send_event(&tx, StreamEvent::MessageStop).await;
                     break;
                 }
@@ -331,12 +362,12 @@ async fn messages_stream_response(upstream_resp: reqwest::Response) -> Response 
         }
     });
 
-    // 将 channel 转换为 axum Body
+    // Convert the channel into an axum Body.
     let body = Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
     (sse_headers(), body).into_response()
 }
 
-/// 向 channel 发送一个 SSE 事件，发送失败（客户端断开）时静默忽略
+/// Send an SSE event to the channel; silently ignore send failures caused by client disconnects.
 async fn send_event(
     tx: &tokio::sync::mpsc::Sender<Result<axum::body::Bytes, std::io::Error>>,
     event: StreamEvent,
@@ -348,7 +379,7 @@ async fn send_event(
     }
 }
 
-/// 从 StreamEvent 枚举值获取对应的 Anthropic event type 字符串
+/// Get the Anthropic event type string for a StreamEvent variant.
 fn event_type_name(event: &StreamEvent) -> &'static str {
     match event {
         StreamEvent::MessageStart { .. } => "message_start",
@@ -362,14 +393,13 @@ fn event_type_name(event: &StreamEvent) -> &'static str {
     }
 }
 
-
 pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", host, port)
         .parse()
-        .map_err(|e| anyhow::anyhow!("无效的监听地址 {}:{} — {}", host, port, e))?;
+        .map_err(|e| anyhow::anyhow!("Invalid listen address {}:{}: {}", host, port, e))?;
     let router = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("服务已启动 → http://{}:{}", host, port);
+    info!("Server started at http://{}:{}", host, port);
     axum::serve(listener, router).await?;
     Ok(())
 }

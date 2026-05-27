@@ -5,14 +5,14 @@ use serde_json::Value;
 use crate::config::api::{editor_plugin_version, user_agent};
 use crate::state::AppState;
 
-/// Copilot 返回的模型列表（顶层容器）
+/// Top-level container for the model list returned by Copilot
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ModelsResponse {
     pub data: Vec<Model>,
     pub object: String,
 }
 
-/// 单个模型，未使用的字段全部放入 extra 用 Value 存储，避免 serde flatten bug
+/// Single model entry; unused fields are stored in extra as Value to avoid serde flatten bugs
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Model {
     pub id: String,
@@ -23,7 +23,7 @@ pub struct Model {
     pub preview: bool,
     pub model_picker_enabled: bool,
     pub capabilities: ModelCapabilities,
-    /// 吸收 model_picker_category、supported_endpoints、policy 等字段
+    /// Absorbs model_picker_category, supported_endpoints, policy, and similar fields
     #[serde(flatten)]
     pub extra: Value,
 }
@@ -35,7 +35,7 @@ pub struct ModelCapabilities {
     pub tokenizer: String,
     #[serde(rename = "type")]
     pub kind: String,
-    /// limits 在部分模型（如 embedding）中缺失
+    /// limits is absent for some models (e.g. embedding models)
     pub limits: Option<ModelLimits>,
     pub supports: ModelSupports,
 }
@@ -45,7 +45,7 @@ pub struct ModelLimits {
     pub max_context_window_tokens: Option<u32>,
     pub max_output_tokens: Option<u32>,
     pub max_prompt_tokens: Option<u32>,
-    /// 吸收 max_non_streaming_output_tokens、vision 等字段
+    /// Absorbs max_non_streaming_output_tokens, vision, and similar fields
     #[serde(flatten)]
     pub extra: Value,
 }
@@ -55,19 +55,19 @@ pub struct ModelSupports {
     pub tool_calls: Option<bool>,
     pub parallel_tool_calls: Option<bool>,
     pub dimensions: Option<bool>,
-    /// 吸收 streaming、vision、adaptive_thinking、reasoning_effort 等字段
+    /// Absorbs streaming, vision, adaptive_thinking, reasoning_effort, and similar fields
     #[serde(flatten)]
     pub extra: Value,
 }
 
-/// 从 Copilot API 获取可用模型列表
+/// Fetch the list of available models from the Copilot API
 pub async fn get_models(client: &reqwest::Client, state: &AppState) -> Result<ModelsResponse> {
     let copilot_token = state
         .copilot_token
         .read()
         .await
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("Copilot Token 未设置"))?;
+        .ok_or_else(|| anyhow::anyhow!("Copilot Token is not set"))?;
 
     let vscode_version = state.vscode_version.as_ref();
 
@@ -83,18 +83,25 @@ pub async fn get_models(client: &reqwest::Client, state: &AppState) -> Result<Mo
         .header("x-github-api-version", "2025-04-01")
         .send()
         .await
-        .context("请求模型列表失败")?;
+        .context("failed to request model list")?;
 
     if !resp.status().is_success() {
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("获取模型列表失败：{}", text);
+        anyhow::bail!("failed to fetch model list: {}", text);
     }
 
-    // 先拿原始 bytes 做调试，解析失败时能看到具体内容
-    let bytes = resp.bytes().await.context("读取模型列表响应失败")?;
+    // Fetch raw bytes for debugging; raw content is visible when parsing fails
+    let bytes = resp
+        .bytes()
+        .await
+        .context("failed to read model list response")?;
     serde_json::from_slice::<ModelsResponse>(&bytes).map_err(|e| {
-        // 打印解析失败的原始 JSON 片段，方便定位字段问题
+        // Print a raw JSON snippet on parse failure to help locate field issues
         let preview: String = String::from_utf8_lossy(&bytes).chars().take(500).collect();
-        anyhow::anyhow!("解析模型列表失败：{}\n响应前500字符：{}", e, preview)
+        anyhow::anyhow!(
+            "failed to parse model list: {}\nfirst 500 response characters: {}",
+            e,
+            preview
+        )
     })
 }

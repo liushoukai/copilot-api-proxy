@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::config::api::{editor_plugin_version, user_agent};
 use crate::state::AppState;
 
-// ── 请求 / 响应类型 ─────────────────────────────────────────
+// ── Request / Response types ─────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct EmbeddingRequest {
@@ -34,7 +34,7 @@ pub struct EmbeddingUsage {
     pub total_tokens: u32,
 }
 
-/// 向 Copilot API 发起 embeddings 请求
+/// Send an embeddings request to the Copilot API
 pub async fn create_embeddings(
     client: &reqwest::Client,
     state: &AppState,
@@ -45,7 +45,7 @@ pub async fn create_embeddings(
         .read()
         .await
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("Copilot Token 未设置"))?;
+        .ok_or_else(|| anyhow::anyhow!("Copilot Token is not set"))?;
 
     let vscode_version = state.vscode_version.as_ref();
 
@@ -62,12 +62,14 @@ pub async fn create_embeddings(
         .json(&payload)
         .send()
         .await
-        .context("请求 embeddings 失败")?;
+        .context("failed to request embeddings")?;
 
     if !resp.status().is_success() {
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("embeddings 请求失败：{}", text);
+        anyhow::bail!("embeddings request failed: {}", text);
     }
 
-    resp.json::<EmbeddingResponse>().await.context("解析 embeddings 响应失败")
+    resp.json::<EmbeddingResponse>()
+        .await
+        .context("failed to parse embeddings response")
 }

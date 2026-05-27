@@ -5,15 +5,12 @@ use crate::config::api::{GITHUB_API_BASE_URL, user_agent};
 
 #[derive(Debug, Deserialize)]
 pub struct GitHubUser {
-    /// GitHub 用户名
+    /// GitHub username
     pub login: String,
 }
 
-/// 获取当前已认证的 GitHub 用户信息，用于登录成功后打印用户名
-pub async fn get_github_user(
-    client: &reqwest::Client,
-    github_token: &str,
-) -> Result<GitHubUser> {
+/// Fetch the currently authenticated GitHub user, used to log the username after sign-in
+pub async fn get_github_user(client: &reqwest::Client, github_token: &str) -> Result<GitHubUser> {
     let url = format!("{}/user", GITHUB_API_BASE_URL);
 
     let resp = client
@@ -24,14 +21,14 @@ pub async fn get_github_user(
         .header("user-agent", user_agent())
         .send()
         .await
-        .context("请求用户信息失败")?;
+        .context("failed to request user information")?;
 
     if !resp.status().is_success() {
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("获取用户信息失败：{}", text);
+        anyhow::bail!("failed to fetch user information: {}", text);
     }
 
     resp.json::<GitHubUser>()
         .await
-        .context("解析用户信息响应失败")
+        .context("failed to parse user information response")
 }

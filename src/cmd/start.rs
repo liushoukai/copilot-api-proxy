@@ -11,54 +11,54 @@ use crate::token::{setup_copilot_token, setup_github_token};
 
 #[derive(Args)]
 pub struct StartArgs {
-    /// 监听端口
+    /// Listening port
     #[arg(short, long, default_value_t = 4142)]
     pub port: u16,
 
-    /// 开启详细日志（DEBUG 级别）
+    /// Enable verbose logging (DEBUG level)
     #[arg(short, long, default_value_t = false)]
     pub verbose: bool,
 
-    /// 直接提供 GitHub Token，跳过 Device Flow 授权
+    /// Provide a GitHub Token directly, skipping Device Flow authorization
     #[arg(short = 'g', long)]
     pub github_token: Option<String>,
 
-    /// 账户类型：individual / business / enterprise
+    /// Account type: individual / business / enterprise
     #[arg(short, long, default_value = "individual")]
     pub account_type: String,
 
-    /// 授权成功后在终端显示 Token
+    /// Display the token in the terminal after successful authorization
     #[arg(long, default_value_t = false)]
     pub show_token: bool,
 
-    /// HTTP/HTTPS 代理地址，例如 http://127.0.0.1:7890
-    /// 等效于同时设置 HTTP_PROXY 和 HTTPS_PROXY 环境变量
+    /// HTTP/HTTPS proxy address, e.g. http://127.0.0.1:7890
+    /// Equivalent to setting both HTTP_PROXY and HTTPS_PROXY env vars
     #[arg(long)]
     pub proxy: Option<String>,
 
-    /// 监听地址，默认只监听本机回环（127.0.0.1）
-    /// 指定 0.0.0.0 可监听所有网络接口（局域网可访问，注意安全）
+    /// Listening address; defaults to loopback only (127.0.0.1)
+    /// Use 0.0.0.0 to listen on all interfaces (accessible on LAN — mind security)
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
 }
 
 pub async fn run(args: &StartArgs) -> Result<()> {
-    // 创建临时 Client 用于启动阶段（此时 state 还未建立）
+    // Create a temporary client for the bootstrap phase (state not yet established)
     let bootstrap_client = build_bootstrap_client(args.proxy.as_deref())?;
 
-    // 动态获取最新 VSCode 版本，版本号影响 GitHub 返回的可用模型范围
+    // Dynamically fetch the latest VSCode version; it affects the model list returned by GitHub
     let vscode_version = get_vscode_version(&bootstrap_client).await;
-    info!("VSCode 版本：{}", vscode_version);
+    info!("VSCode version: {}", vscode_version);
 
-    // 建立全局状态，显式传入代理地址（未传时回退到环境变量）
+    // Build global state, passing proxy address explicitly (falls back to env vars when absent)
     let state = AppState::new(&vscode_version, args.proxy.as_deref());
     if let Some(ref proxy) = args.proxy {
-        info!("代理已设置：{}", proxy);
+        info!("Proxy configured: {}", proxy);
     }
 
-    // 获取 GitHub Token
+    // Obtain GitHub Token
     if let Some(ref token) = args.github_token {
-        info!("使用命令行提供的 GitHub Token");
+        info!("Using GitHub Token provided from the command line");
         *state.github_token.write().await = Some(token.clone());
     } else {
         setup_github_token(&state, false).await?;
@@ -66,25 +66,25 @@ pub async fn run(args: &StartArgs) -> Result<()> {
 
     if args.show_token {
         if let Some(t) = state.github_token.read().await.as_deref() {
-            info!("GitHub Token：{}", t);
+            info!("GitHub Token: {}", t);
         }
     }
 
-    // 换取 Copilot Token 并启动后台自动刷新
+    // Exchange for Copilot Token and start background auto-refresh
     setup_copilot_token(state.clone()).await?;
 
     if args.show_token {
         if let Some(t) = state.copilot_token.read().await.as_deref() {
-            info!("Copilot Token：{}", t);
+            info!("Copilot Token: {}", t);
         }
     }
 
-    // 预热模型列表缓存，失败时指数退避重试，全部失败则终止启动
+    // Warm up the model list cache; exponential backoff on failure, abort startup if all retries fail
     const MAX_RETRIES: u32 = 3;
     let models = fetch_models_with_retry(&state, MAX_RETRIES).await?;
 
     info!(
-        "可用模型：\n{}",
+        "Available models:\n{}",
         models
             .data
             .iter()
@@ -93,28 +93,32 @@ pub async fn run(args: &StartArgs) -> Result<()> {
             .join("\n")
     );
 
-    // 检查是否包含 claude 模型，若无则提前警告
-    // GitHub Copilot 会按请求来源 IP 返回不同的模型列表：
-    // 中国大陆 IP 直连时，服务端会过滤掉 claude-* 模型（Anthropic 地区限制）；
-    // 走海外代理后，返回完整列表，claude-* 才会出现。
-    let claude_count = models.data.iter().filter(|m| m.id.starts_with("claude-")).count();
+    // Warn early if no claude models are present in the list.
+    // GitHub Copilot returns different model lists based on the request's source IP:
+    // Connections from mainland China IPs have claude-* models filtered out (Anthropic geo-restriction).
+    // A non-China proxy reveals the full list where claude-* models appear.
+    let claude_count = models
+        .data
+        .iter()
+        .filter(|m| m.id.starts_with("claude-"))
+        .count();
     if claude_count == 0 {
         tracing::warn!(
-            "⚠️  模型列表中没有 claude-* 模型，Claude Code / Anthropic 请求将无法正常工作。\
-             这通常是因为当前出口 IP 位于中国大陆，Copilot 服务端会按地区过滤 Claude 模型。\
-             请通过 --proxy http://127.0.0.1:7890 参数或 HTTP_PROXY/HTTPS_PROXY 环境变量设置海外代理后重新启动。"
+            "No claude-* models were found in the model list; Claude Code / Anthropic requests will not work correctly.\
+             This usually means the current egress IP is in mainland China, and the Copilot service filtered Claude models by region.\
+             Configure an overseas proxy with --proxy http://127.0.0.1:7890 or HTTP_PROXY/HTTPS_PROXY, then restart."
         );
     }
-    // 将模型 ID 列表单独缓存为 Arc，后续每次请求 clone Arc 即可，无字符串拷贝
+    // Cache the model ID list as Arc; subsequent requests only clone the Arc, no string copies
     let ids: Vec<String> = models.data.iter().map(|m| m.id.clone()).collect();
     *state.model_ids.write().await = Arc::new(ids);
     *state.models.write().await = Some(models);
 
-    info!("账户类型：{}", args.account_type);
+    info!("Account type: {}", args.account_type);
     serve(state, &args.host, args.port).await
 }
 
-/// 构建启动阶段临时使用的 HTTP Client，支持可选代理
+/// Build the temporary HTTP Client used during the bootstrap phase, with optional proxy support
 fn build_bootstrap_client(proxy: Option<&str>) -> Result<reqwest::Client> {
     let mut builder = reqwest::ClientBuilder::new();
     if let Some(url) = proxy {
@@ -123,14 +127,22 @@ fn build_bootstrap_client(proxy: Option<&str>) -> Result<reqwest::Client> {
     Ok(builder.build()?)
 }
 
-/// 获取模型列表，失败时按指数退避重试，全部失败则返回错误
-async fn fetch_models_with_retry(state: &AppState, max_retries: u32) -> Result<crate::copilot::models::ModelsResponse> {
-    let mut last_err = anyhow::anyhow!("未知错误");
+/// Fetch the model list with exponential backoff retries; return error if all attempts fail
+async fn fetch_models_with_retry(
+    state: &AppState,
+    max_retries: u32,
+) -> Result<crate::copilot::models::ModelsResponse> {
+    let mut last_err = anyhow::anyhow!("unknown error");
     for attempt in 0..max_retries {
         if attempt > 0 {
-            // 指数退避：1s、2s、4s …
+            // Exponential backoff: 1s, 2s, 4s ...
             let delay = std::time::Duration::from_secs(1 << (attempt - 1));
-            tracing::warn!("获取模型列表失败，{} 秒后重试（第 {}/{} 次）…", delay.as_secs(), attempt, max_retries - 1);
+            tracing::warn!(
+                "Failed to fetch model list; retrying in {} seconds (attempt {}/{})",
+                delay.as_secs(),
+                attempt,
+                max_retries - 1
+            );
             tokio::time::sleep(delay).await;
         }
         match get_models(&state.client, state).await {
@@ -139,8 +151,8 @@ async fn fetch_models_with_retry(state: &AppState, max_retries: u32) -> Result<c
         }
     }
     tracing::error!(
-        "⚠️  获取模型列表连续失败 {} 次，终止启动。\
-         请检查网络是否可达 api.githubcopilot.com，或通过 HTTP_PROXY/HTTPS_PROXY 设置代理。",
+        "Failed to fetch the model list after {} attempts; aborting startup.\
+         Check network access to api.githubcopilot.com or configure a proxy with HTTP_PROXY/HTTPS_PROXY.",
         max_retries
     );
     Err(last_err)
@@ -152,21 +164,21 @@ mod tests {
 
     #[test]
     fn test_build_client_with_proxy() {
-        // 传入合法代理地址，client 应构建成功
+        // Valid proxy URL: client should build successfully
         let result = build_bootstrap_client(Some("http://127.0.0.1:7890"));
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_build_client_without_proxy() {
-        // 不传代理，client 应构建成功（回退到环境变量）
+        // No proxy: client should build successfully (falls back to env vars)
         let result = build_bootstrap_client(None);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_build_client_invalid_proxy() {
-        // reqwest 对代理 URL 的校验延迟到实际连接，构建阶段不报错是正常行为
+        // reqwest defers proxy URL validation to connection time; no error at build stage is expected
         let result = build_bootstrap_client(Some("not-a-valid-url"));
         assert!(result.is_ok());
     }

@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::config::api::{editor_plugin_version, user_agent};
 use crate::state::AppState;
 
-// ── 请求类型 ────────────────────────────────────────────────
+// ── Request types ────────────────────────────────────────────
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct ChatCompletionsPayload {
@@ -67,7 +67,7 @@ pub struct FunctionCall {
     pub arguments: String,
 }
 
-// ── 非流式响应类型 ──────────────────────────────────────────
+// ── Non-streaming response types ──────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionResponse {
@@ -89,7 +89,7 @@ pub struct ResponseMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
 }
 
-// ── 流式 chunk 类型 ─────────────────────────────────────────
+// ── Streaming chunk types ─────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionChunk {
@@ -105,9 +105,9 @@ pub struct ChunkChoice {
     pub finish_reason: Option<String>,
 }
 
-// ── 核心调用逻辑 ────────────────────────────────────────────
+// ── Core request logic ────────────────────────────────────────────
 
-/// 向 Copilot API 发起 chat/completions 请求，返回原始 Response（支持流式透传）
+/// Send a chat/completions request to the Copilot API and return the raw Response (supports streaming passthrough)
 pub async fn create_chat_completions(
     client: &reqwest::Client,
     state: &AppState,
@@ -118,24 +118,25 @@ pub async fn create_chat_completions(
         .read()
         .await
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("Copilot Token 未设置"))?;
+        .ok_or_else(|| anyhow::anyhow!("Copilot Token is not set"))?;
 
     let vscode_version = state.vscode_version.as_ref();
 
-    // 判断是否为 agent 调用（消息中有 assistant / tool 角色）
+    // Detect agent calls (messages contain an assistant or tool role)
     let is_agent = payload
         .messages
         .iter()
         .any(|m| m.role == "assistant" || m.role == "tool");
 
-    // 判断是否包含图片内容（vision 请求）
+    // Detect image content in messages (vision request)
     let enable_vision = payload.messages.iter().any(|m| {
         m.content
             .as_ref()
             .and_then(|c| c.as_array())
-            .map(|arr| arr.iter().any(|p| {
-                p.get("type").and_then(|t| t.as_str()) == Some("image_url")
-            }))
+            .map(|arr| {
+                arr.iter()
+                    .any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"))
+            })
             .unwrap_or(false)
     });
 
@@ -158,10 +159,12 @@ pub async fn create_chat_completions(
         req = req.header("copilot-vision-request", "true");
     }
 
-    req.send().await.context("请求 chat/completions 失败")
+    req.send()
+        .await
+        .context("failed to request chat/completions")
 }
 
-/// 将 reqwest 流式响应转换为 axum SSE Body
+/// Convert a reqwest streaming response into an axum SSE Body
 pub fn to_sse_body(resp: Response) -> Body {
     Body::from_stream(resp.bytes_stream())
 }

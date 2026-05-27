@@ -1,54 +1,54 @@
 use serde_json::{Value, json};
 
 use crate::copilot::chat::{
-    ChatCompletionsPayload, ChatCompletionResponse, Message, Tool, FunctionDef,
+    ChatCompletionResponse, ChatCompletionsPayload, FunctionDef, Message, Tool,
 };
 
 use super::types::{
-    AnthropicMessage, AnthropicTool, AnthropicToolChoice, MessagesPayload,
-    MessagesResponse, AnthropicUsage,
+    AnthropicMessage, AnthropicTool, AnthropicToolChoice, AnthropicUsage, MessagesPayload,
+    MessagesResponse,
 };
 
-// ── 模型名称规范化 ────────────────────────────────────────────
+// ── Model name normalization ────────────────────────────────────────────
 
-/// 基于 Copilot 实际可用模型列表，将请求的模型名映射到最合适的模型 ID。
+/// Map the requested model name to the best matching model ID from the Copilot available model list.
 ///
-/// 匹配策略（按优先级）：
-/// 1. 精确匹配 model_id
-/// 2. 去掉日期后缀后精确匹配
-/// 3. family 匹配（claude-sonnet → 取最新同 family 模型）
-/// 4. 同代降级（haiku → sonnet，同 major 版本）
-/// 5. 从列表中选第一个 claude chat 模型兜底
-/// 6. 若列表为空，返回原始名称不做修改
+/// Matching strategy (in priority order):
+/// 1. Exact match on model_id
+/// 2. Exact match after stripping date suffix
+/// 3. Family match (claude-sonnet → pick the newest model of the same family)
+/// 4. Same-generation downgrade (haiku → sonnet, same major version)
+/// 5. Fall back to the first claude model in the list
+/// 6. Return the original name unchanged if the list is empty
 pub fn resolve_model<'a>(requested: &str, available: &'a [String]) -> String {
     if available.is_empty() {
         return requested.to_string();
     }
 
-    // 步骤1：精确匹配
+    // Step 1: exact match
     if available.iter().any(|id| id == requested) {
         return requested.to_string();
     }
 
-    // 步骤2：去掉日期后缀后精确匹配（claude-haiku-4-5-20251001 → claude-haiku-4-5）
+    // Step 2: exact match after stripping date suffix (claude-haiku-4-5-20251001 → claude-haiku-4-5)
     let without_date = strip_date_suffix(requested);
     if available.iter().any(|id| id == &without_date) {
         return without_date;
     }
 
-    // 步骤3：版本点格式匹配（claude-sonnet-4-5 → claude-sonnet-4.5）
+    // Step 3: dotted version format match (claude-sonnet-4-5 → claude-sonnet-4.5)
     let dotted = normalize_version(requested);
     if available.iter().any(|id| id == &dotted) {
         return dotted.clone();
     }
 
-    // 步骤4：family + major 匹配，取最新版本
-    // 例：claude-sonnet-4.6 → family="sonnet", major=4，找 claude-sonnet-4.*
+    // Step 4: family + major match, pick the newest version
+    // e.g. claude-sonnet-4.6 → family="sonnet", major=4, look for claude-sonnet-4.*
     if let Some(best) = find_by_family_major(&dotted, available) {
         return best;
     }
 
-    // 步骤5：haiku 降级到同代 sonnet（claude-haiku-4.5 → claude-sonnet-4.5 或同代 sonnet）
+    // Step 5: downgrade haiku to same-generation sonnet (claude-haiku-4.5 → claude-sonnet-4.5 or same-gen sonnet)
     if dotted.contains("-haiku-") {
         let sonnet_name = dotted.replace("-haiku-", "-sonnet-");
         if let Some(best) = find_by_family_major(&sonnet_name, available) {
@@ -56,19 +56,20 @@ pub fn resolve_model<'a>(requested: &str, available: &'a [String]) -> String {
         }
     }
 
-    // 步骤6：从列表中取第一个 claude chat 模型兜底
+    // Step 6: fall back to the first claude model in the list
     if let Some(fallback) = available.iter().find(|id| id.starts_with("claude-")) {
         return fallback.clone();
     }
 
-    // 步骤7：实在没有合适的，原样返回
+    // Step 7: no suitable match found, return as-is
     requested.to_string()
 }
 
-/// 去掉末尾的日期后缀（纯数字且长度>=6），如 claude-haiku-4-5-20251001 → claude-haiku-4-5
+/// Strip trailing date suffix (all-digit segment with length >= 6), e.g. claude-haiku-4-5-20251001 → claude-haiku-4-5
 fn strip_date_suffix(model: &str) -> String {
     let parts: Vec<&str> = model.split('-').collect();
-    let has_date = parts.last()
+    let has_date = parts
+        .last()
         .map(|p| p.chars().all(|c| c.is_ascii_digit()) && p.len() >= 6)
         .unwrap_or(false);
     if has_date && parts.len() > 1 {
@@ -78,22 +79,26 @@ fn strip_date_suffix(model: &str) -> String {
     }
 }
 
-/// 将 claude-{family}-{major}-{minor}[-{date}] 转为 claude-{family}-{major}.{minor}
+/// Convert claude-{family}-{major}-{minor}[-{date}] to claude-{family}-{major}.{minor}
 fn normalize_version(model: &str) -> String {
     let parts: Vec<&str> = model.split('-').collect();
     if parts.len() < 4 || parts[0] != "claude" {
         return model.to_string();
     }
 
-    // 末尾是日期（纯数字，长度>=6）则去掉，再取最后一段作 minor
-    let end = if parts.last().map(|p| p.chars().all(|c| c.is_ascii_digit()) && p.len() >= 6).unwrap_or(false) {
+    // Drop trailing date segment (all-digit, length >= 6), then use the last segment as minor
+    let end = if parts
+        .last()
+        .map(|p| p.chars().all(|c| c.is_ascii_digit()) && p.len() >= 6)
+        .unwrap_or(false)
+    {
         parts.len() - 1
     } else {
         parts.len()
     };
 
     let minor = parts[end - 1];
-    // minor 必须是纯数字
+    // minor must be all digits
     if !minor.chars().all(|c| c.is_ascii_digit()) {
         return model.to_string();
     }
@@ -102,33 +107,37 @@ fn normalize_version(model: &str) -> String {
     format!("{}.{}", prefix, minor)
 }
 
-/// 从 available 列表中找与 model 同 family + major 的最新版本。
-/// 例：dotted="claude-sonnet-4.6"，family="sonnet"，major="4"
-/// 会在列表中找所有 "claude-sonnet-4.*" 并返回最后一个（ID 通常按版本排序）。
+/// Find the newest model in available with the same family + major as model.
+/// e.g. dotted="claude-sonnet-4.6", family="sonnet", major="4"
+/// finds all "claude-sonnet-4.*" entries and returns the last one (IDs are typically sorted by version).
 fn find_by_family_major(model: &str, available: &[String]) -> Option<String> {
-    // 解析 claude-{family}-{major}.{minor} 格式
+    // Parse claude-{family}-{major}.{minor} format
     let parts: Vec<&str> = model.splitn(2, '-').collect();
     if parts.len() < 2 || parts[0] != "claude" {
         return None;
     }
-    // prefix = "claude-sonnet-4"（取到 major）
+    // prefix = "claude-sonnet-4" (up to and including major)
     let prefix = {
-        // 找最后一个 '.' 前的部分作为前缀匹配键
+        // Use the substring before the last '.' as the prefix matching key
         let dot_pos = model.rfind('.')?;
         &model[..dot_pos]
     };
 
-    let matches: Vec<&String> = available.iter()
+    let matches: Vec<&String> = available
+        .iter()
         .filter(|id| id.starts_with(prefix))
         .collect();
 
     matches.last().map(|s| (*s).clone())
 }
 
-// ── Anthropic → OpenAI 请求转换 ───────────────────────────────
+// ── Anthropic → OpenAI request translation ───────────────────────────────
 
-/// 将 Anthropic 请求格式转换为 OpenAI 格式，使用 available_models 做动态模型映射
-pub fn translate_to_openai(payload: &MessagesPayload, available_models: &[String]) -> ChatCompletionsPayload {
+/// Convert an Anthropic request into OpenAI format, using available_models for dynamic model mapping.
+pub fn translate_to_openai(
+    payload: &MessagesPayload,
+    available_models: &[String],
+) -> ChatCompletionsPayload {
     ChatCompletionsPayload {
         model: resolve_model(&payload.model, available_models),
         messages: translate_messages(&payload.messages, &payload.system),
@@ -137,7 +146,9 @@ pub fn translate_to_openai(payload: &MessagesPayload, available_models: &[String
         stream: payload.stream,
         temperature: payload.temperature,
         top_p: payload.top_p,
-        user: payload.metadata.as_ref()
+        user: payload
+            .metadata
+            .as_ref()
             .and_then(|m| m.get("user_id"))
             .and_then(|v| v.as_str())
             .map(String::from),
@@ -147,17 +158,15 @@ pub fn translate_to_openai(payload: &MessagesPayload, available_models: &[String
     }
 }
 
-fn translate_messages(
-    messages: &[AnthropicMessage],
-    system: &Option<Value>,
-) -> Vec<Message> {
+fn translate_messages(messages: &[AnthropicMessage], system: &Option<Value>) -> Vec<Message> {
     let mut result = Vec::new();
 
-    // system prompt 转换为 OpenAI system 消息
+    // Convert the system prompt into an OpenAI system message.
     if let Some(sys) = system {
         let text = match sys {
             Value::String(s) => s.clone(),
-            Value::Array(arr) => arr.iter()
+            Value::Array(arr) => arr
+                .iter()
                 .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
                 .collect::<Vec<_>>()
                 .join("\n\n"),
@@ -192,7 +201,7 @@ fn translate_user_message(content: &Value) -> Vec<Message> {
     let blocks = match content {
         Value::Array(arr) => arr.as_slice(),
         _ => {
-            // 纯文本直接返回
+            // Return plain text directly.
             return vec![Message {
                 role: "user".to_string(),
                 content: Some(content.clone()),
@@ -201,18 +210,25 @@ fn translate_user_message(content: &Value) -> Vec<Message> {
         }
     };
 
-    // tool_result 块转为 OpenAI tool 消息
-    for block in blocks.iter().filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result")) {
+    // Convert tool_result blocks into OpenAI tool messages.
+    for block in blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+    {
         result.push(Message {
             role: "tool".to_string(),
-            tool_call_id: block.get("tool_use_id").and_then(|v| v.as_str()).map(String::from),
+            tool_call_id: block
+                .get("tool_use_id")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             content: block.get("content").cloned(),
             ..Default::default()
         });
     }
 
-    // 其余块保留为 user 消息
-    let other_blocks: Vec<&Value> = blocks.iter()
+    // Keep all other blocks as user messages.
+    let other_blocks: Vec<&Value> = blocks
+        .iter()
         .filter(|b| b.get("type").and_then(|t| t.as_str()) != Some("tool_result"))
         .collect();
 
@@ -236,16 +252,23 @@ fn translate_assistant_message(content: &Value) -> Vec<Message> {
                 role: "assistant".to_string(),
                 content: Some(content.clone()),
                 ..Default::default()
-            }]
+            }];
         }
     };
 
-    let tool_use_blocks: Vec<&Value> = blocks.iter()
+    let tool_use_blocks: Vec<&Value> = blocks
+        .iter()
         .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
         .collect();
 
-    let text_parts: Vec<&str> = blocks.iter()
-        .filter(|b| matches!(b.get("type").and_then(|t| t.as_str()), Some("text") | Some("thinking")))
+    let text_parts: Vec<&str> = blocks
+        .iter()
+        .filter(|b| {
+            matches!(
+                b.get("type").and_then(|t| t.as_str()),
+                Some("text") | Some("thinking")
+            )
+        })
         .filter_map(|b| {
             if b.get("type").and_then(|t| t.as_str()) == Some("thinking") {
                 b.get("thinking").and_then(|v| v.as_str())
@@ -269,16 +292,27 @@ fn translate_assistant_message(content: &Value) -> Vec<Message> {
 
         vec![Message {
             role: "assistant".to_string(),
-            content: if text.is_empty() { None } else { Some(Value::String(text)) },
-            tool_calls: Some(tool_calls.into_iter()
-                .filter_map(|v| match serde_json::from_value(v.clone()) {
-                    Ok(tc) => Some(tc),
-                    Err(e) => {
-                        tracing::warn!("反序列化 tool_call 失败，已跳过：{} | 原始数据：{}", e, v);
-                        None
-                    }
-                })
-                .collect()),
+            content: if text.is_empty() {
+                None
+            } else {
+                Some(Value::String(text))
+            },
+            tool_calls: Some(
+                tool_calls
+                    .into_iter()
+                    .filter_map(|v| match serde_json::from_value(v.clone()) {
+                        Ok(tc) => Some(tc),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to deserialize tool_call; skipped: {} | raw data: {}",
+                                e,
+                                v
+                            );
+                            None
+                        }
+                    })
+                    .collect(),
+            ),
             ..Default::default()
         }]
     } else {
@@ -290,13 +324,15 @@ fn translate_assistant_message(content: &Value) -> Vec<Message> {
     }
 }
 
-/// 将内容块列表映射为 OpenAI content：有图片则返回数组，否则拼接纯文本
+/// Map content blocks to OpenAI content: return an array for images, otherwise concatenate plain text.
 fn map_content_blocks(blocks: &[&Value]) -> Value {
-    let has_image = blocks.iter()
+    let has_image = blocks
+        .iter()
         .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("image"));
 
     if !has_image {
-        let text: String = blocks.iter()
+        let text: String = blocks
+            .iter()
             .filter_map(|b| {
                 let kind = b.get("type").and_then(|t| t.as_str())?;
                 match kind {
@@ -310,7 +346,7 @@ fn map_content_blocks(blocks: &[&Value]) -> Value {
         return Value::String(text);
     }
 
-    // 有图片：转换为 OpenAI 多模态数组
+    // Images are present: convert to an OpenAI multimodal array.
     let parts: Vec<Value> = blocks.iter().filter_map(|b| {
         match b.get("type").and_then(|t| t.as_str())? {
             "text" => Some(json!({ "type": "text", "text": b.get("text").and_then(|v| v.as_str()).unwrap_or("") })),
@@ -332,14 +368,18 @@ fn map_content_blocks(blocks: &[&Value]) -> Value {
 }
 
 fn translate_tools(tools: Option<&[AnthropicTool]>) -> Option<Vec<Tool>> {
-    tools.map(|ts| ts.iter().map(|t| Tool {
-        kind: "function".to_string(),
-        function: FunctionDef {
-            name: t.name.clone(),
-            description: t.description.clone(),
-            parameters: t.input_schema.clone(),
-        },
-    }).collect())
+    tools.map(|ts| {
+        ts.iter()
+            .map(|t| Tool {
+                kind: "function".to_string(),
+                function: FunctionDef {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    parameters: t.input_schema.clone(),
+                },
+            })
+            .collect()
+    })
 }
 
 fn translate_tool_choice(choice: Option<&AnthropicToolChoice>) -> Option<Value> {
@@ -355,7 +395,7 @@ fn translate_tool_choice(choice: Option<&AnthropicToolChoice>) -> Option<Value> 
     })
 }
 
-// ── OpenAI → Anthropic 响应转换 ───────────────────────────────
+// ── OpenAI → Anthropic response translation ───────────────────────────────
 
 pub fn translate_to_anthropic(resp: &ChatCompletionResponse) -> MessagesResponse {
     let mut text_blocks: Vec<Value> = Vec::new();
@@ -375,8 +415,8 @@ pub fn translate_to_anthropic(resp: &ChatCompletionResponse) -> MessagesResponse
 
         if let Some(ref tool_calls) = choice.message.tool_calls {
             for tc in tool_calls {
-                let input: Value = serde_json::from_str(&tc.function.arguments)
-                    .unwrap_or(Value::Null);
+                let input: Value =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
                 tool_use_blocks.push(json!({
                     "type": "tool_use",
                     "id": tc.id,
@@ -390,17 +430,25 @@ pub fn translate_to_anthropic(resp: &ChatCompletionResponse) -> MessagesResponse
     let mut content = text_blocks;
     content.extend(tool_use_blocks);
 
-    let (input_tokens, output_tokens, cache_read) = resp.usage.as_ref().map(|u| {
-        let prompt = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let completion = u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let cached = u.get("prompt_tokens_details")
-            .and_then(|d| d.get("cached_tokens"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-        let input = prompt.saturating_sub(cached);
-        let cache_read = if cached > 0 { Some(cached) } else { None };
-        (input, completion, cache_read)
-    }).unwrap_or((0, 0, None));
+    let (input_tokens, output_tokens, cache_read) = resp
+        .usage
+        .as_ref()
+        .map(|u| {
+            let prompt = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let completion = u
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let cached = u
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let input = prompt.saturating_sub(cached);
+            let cache_read = if cached > 0 { Some(cached) } else { None };
+            (input, completion, cache_read)
+        })
+        .unwrap_or((0, 0, None));
 
     MessagesResponse {
         id: resp.id.clone(),
@@ -410,18 +458,25 @@ pub fn translate_to_anthropic(resp: &ChatCompletionResponse) -> MessagesResponse
         content,
         stop_reason: map_stop_reason(stop_reason.as_deref()),
         stop_sequence: None,
-        usage: AnthropicUsage { input_tokens, output_tokens, cache_read_input_tokens: cache_read },
+        usage: AnthropicUsage {
+            input_tokens,
+            output_tokens,
+            cache_read_input_tokens: cache_read,
+        },
     }
 }
 
 pub fn map_stop_reason(reason: Option<&str>) -> Option<String> {
-    reason.map(|r| match r {
-        "stop" => "end_turn",
-        "length" => "max_tokens",
-        "tool_calls" => "tool_use",
-        "content_filter" => "end_turn",
-        _ => "end_turn",
-    }.to_string())
+    reason.map(|r| {
+        match r {
+            "stop" => "end_turn",
+            "length" => "max_tokens",
+            "tool_calls" => "tool_use",
+            "content_filter" => "end_turn",
+            _ => "end_turn",
+        }
+        .to_string()
+    })
 }
 
 #[cfg(test)]
@@ -435,15 +490,18 @@ mod tests {
     #[test]
     fn test_exact_match() {
         let available = models(&["claude-3.5-sonnet", "claude-3.7-sonnet", "gpt-4o"]);
-        assert_eq!(resolve_model("claude-3.5-sonnet", &available), "claude-3.5-sonnet");
+        assert_eq!(
+            resolve_model("claude-3.5-sonnet", &available),
+            "claude-3.5-sonnet"
+        );
     }
 
     #[test]
     fn test_date_suffix_stripped() {
-        // claude-haiku-4-5-20251001 → 去日期 → claude-haiku-4-5→ 无点格式无精确匹配
-        // → dotted = claude-haiku-4.5 → 无精确匹配 → family+major = claude-haiku-4 → 无
-        // → haiku降级 → claude-sonnet-4.5 → family+major = claude-sonnet-4 → claude-3.5-sonnet 不满足
-        // → fallback 第一个 claude
+        // claude-haiku-4-5-20251001 -> strip date -> claude-haiku-4-5 -> no exact undotted match
+        // -> dotted = claude-haiku-4.5 -> no exact match -> family+major = claude-haiku-4 -> none
+        // -> haiku downgrade -> claude-sonnet-4.5 -> family+major = claude-sonnet-4 -> claude-3.5-sonnet does not match
+        // -> fallback to the first claude model
         let available = models(&["claude-3.5-sonnet", "gpt-4o"]);
         let result = resolve_model("claude-haiku-4-5-20251001", &available);
         assert_eq!(result, "claude-3.5-sonnet");
@@ -452,21 +510,30 @@ mod tests {
     #[test]
     fn test_dotted_exact_match() {
         let available = models(&["claude-sonnet-4.5", "claude-sonnet-4.6"]);
-        assert_eq!(resolve_model("claude-sonnet-4-5", &available), "claude-sonnet-4.5");
+        assert_eq!(
+            resolve_model("claude-sonnet-4-5", &available),
+            "claude-sonnet-4.5"
+        );
     }
 
     #[test]
     fn test_family_major_match() {
-        // claude-sonnet-4.6 → prefix=claude-sonnet-4 → 匹配 claude-sonnet-4.5
+        // claude-sonnet-4.6 -> prefix=claude-sonnet-4 -> matches claude-sonnet-4.5
         let available = models(&["claude-sonnet-4.5", "gpt-4o"]);
-        assert_eq!(resolve_model("claude-sonnet-4.6", &available), "claude-sonnet-4.5");
+        assert_eq!(
+            resolve_model("claude-sonnet-4.6", &available),
+            "claude-sonnet-4.5"
+        );
     }
 
     #[test]
     fn test_haiku_downgrade() {
-        // haiku-4.5 → sonnet降级 → claude-sonnet-4.5 精确匹配
+        // haiku-4.5 -> sonnet downgrade -> exact match on claude-sonnet-4.5
         let available = models(&["claude-sonnet-4.5", "gpt-4o"]);
-        assert_eq!(resolve_model("claude-haiku-4.5", &available), "claude-sonnet-4.5");
+        assert_eq!(
+            resolve_model("claude-haiku-4.5", &available),
+            "claude-sonnet-4.5"
+        );
     }
 
     #[test]
@@ -477,7 +544,7 @@ mod tests {
     #[test]
     fn test_fallback_first_claude() {
         let available = models(&["claude-3.5-sonnet", "gpt-4o"]);
-        // 请求一个完全不匹配的型号
+        // Request a model that does not match anything.
         let result = resolve_model("claude-opus-99.9", &available);
         assert_eq!(result, "claude-3.5-sonnet");
     }

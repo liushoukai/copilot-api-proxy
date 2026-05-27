@@ -3,19 +3,19 @@ use serde::Deserialize;
 
 use crate::config::api::{GITHUB_API_BASE_URL, editor_plugin_version, user_agent};
 
-/// Copilot Token 响应
+/// Copilot Token response
 #[derive(Debug, Deserialize)]
 pub struct CopilotTokenResponse {
-    /// 短期 Copilot Token，用于调用 Copilot 补全 API
+    /// Short-lived Copilot Token for calling the Copilot completion API
     pub token: String,
-    /// Token 过期时间戳（Unix 秒）
+    /// Token expiry Unix timestamp (seconds)
     #[allow(dead_code)]
     pub expires_at: u64,
-    /// 多少秒后刷新（通常约 1800 秒）
+    /// Seconds until the token should be refreshed (typically ~1800s)
     pub refresh_in: u64,
 }
 
-/// 用 GitHub Access Token 换取 Copilot 专属短期 Token
+/// Exchange a GitHub Access Token for a short-lived Copilot-specific Token
 pub async fn get_copilot_token(
     client: &reqwest::Client,
     github_token: &str,
@@ -35,14 +35,14 @@ pub async fn get_copilot_token(
         .header("x-vscode-user-agent-library-version", "electron-fetch")
         .send()
         .await
-        .context("请求 Copilot Token 失败")?;
+        .context("failed to request Copilot Token")?;
 
     if !resp.status().is_success() {
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("获取 Copilot Token 失败：{}", text);
+        anyhow::bail!("failed to fetch Copilot Token: {}", text);
     }
 
     resp.json::<CopilotTokenResponse>()
         .await
-        .context("解析 Copilot Token 响应失败")
+        .context("failed to parse Copilot Token response")
 }

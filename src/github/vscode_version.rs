@@ -1,15 +1,18 @@
 use tracing::warn;
 
-/// VSCode 版本兜底值
+/// Fallback VSCode version
 const FALLBACK_VERSION: &str = "1.117.0";
 
-/// 从 AUR PKGBUILD 动态获取最新 VSCode 版本号
+/// Dynamically fetch the latest VSCode version from the AUR PKGBUILD.
 ///
-/// 获取失败时返回兜底版本，不影响启动流程
+/// Returns the fallback version on failure so the startup process is unaffected.
 pub async fn get_vscode_version(client: &reqwest::Client) -> String {
     let result = fetch_version(client).await;
     result.unwrap_or_else(|e| {
-        warn!("获取 VSCode 版本失败，使用兜底版本 {}：{}", FALLBACK_VERSION, e);
+        warn!(
+            "Failed to fetch VSCode version; using fallback version {}: {}",
+            FALLBACK_VERSION, e
+        );
         FALLBACK_VERSION.to_string()
     })
 }
@@ -23,14 +26,14 @@ async fn fetch_version(client: &reqwest::Client) -> anyhow::Result<String> {
 
     let text = resp.text().await?;
 
-    // 从 PKGBUILD 中提取 pkgver=x.x.x
+    // Extract pkgver=x.x.x from the PKGBUILD
     let version = text
         .lines()
         .find_map(|line| {
             let line = line.trim();
             line.strip_prefix("pkgver=")
         })
-        .ok_or_else(|| anyhow::anyhow!("未找到 pkgver 字段"))?
+        .ok_or_else(|| anyhow::anyhow!("pkgver field not found"))?
         .to_string();
 
     Ok(version)

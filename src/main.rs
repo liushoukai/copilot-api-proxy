@@ -17,7 +17,7 @@ use cmd::{Cli, Commands};
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // --verbose 优先；否则读 LOG_LEVEL 环境变量；兜底 INFO
+    // --verbose takes priority; otherwise read LOG_LEVEL env var; default to INFO
     let filter = match &cli.command {
         Commands::Start(args) if args.verbose => EnvFilter::new("debug"),
         _ => {

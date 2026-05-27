@@ -1,14 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-// ── 请求类型 ────────────────────────────────────────────────
+// ── Request types ────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct MessagesPayload {
     pub model: String,
     pub messages: Vec<AnthropicMessage>,
     pub max_tokens: u32,
-    pub system: Option<Value>,          // string 或 Array<TextBlock>
+    pub system: Option<Value>, // string or Array<TextBlock>
     pub stop_sequences: Option<Vec<String>>,
     pub stream: Option<bool>,
     pub temperature: Option<f32>,
@@ -20,8 +20,8 @@ pub struct MessagesPayload {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AnthropicMessage {
-    pub role: String,                   // "user" | "assistant"
-    pub content: Value,                 // string 或 Array<ContentBlock>
+    pub role: String,   // "user" | "assistant"
+    pub content: Value, // string or Array<ContentBlock>
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -34,11 +34,11 @@ pub struct AnthropicTool {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AnthropicToolChoice {
     #[serde(rename = "type")]
-    pub kind: String,                   // "auto" | "any" | "tool" | "none"
+    pub kind: String, // "auto" | "any" | "tool" | "none"
     pub name: Option<String>,
 }
 
-// ── 响应类型 ────────────────────────────────────────────────
+// ── Response types ────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 pub struct MessagesResponse {
@@ -61,7 +61,7 @@ pub struct AnthropicUsage {
     pub cache_read_input_tokens: Option<u32>,
 }
 
-// ── 流式事件类型 ─────────────────────────────────────────────
+// ── Streaming event types ─────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -85,10 +85,10 @@ pub enum StreamEvent {
         usage: StreamUsage,
     },
     MessageStop,
-    /// Anthropic 协议保留变体，服务端心跳事件
+    /// Reserved Anthropic protocol variant; server-side ping event
     #[allow(dead_code)]
     Ping,
-    /// Anthropic 协议保留变体，流式错误事件
+    /// Reserved Anthropic protocol variant; streaming error event
     #[allow(dead_code)]
     Error {
         error: StreamError,
@@ -111,8 +111,14 @@ pub struct MessageStartData {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: Value },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -143,14 +149,14 @@ pub struct StreamError {
     pub message: String,
 }
 
-// ── 流式状态 ─────────────────────────────────────────────────
+// ── Streaming state ─────────────────────────────────────────────────
 
-/// 流式翻译过程中的可变状态
+/// Mutable state maintained during streaming translation
 pub struct StreamState {
     pub message_start_sent: bool,
     pub content_block_index: usize,
     pub content_block_open: bool,
-    /// key: OpenAI tool_call index，value: (id, name, anthropic_block_index)
+    /// key: OpenAI tool_call index, value: (id, name, anthropic_block_index)
     pub tool_calls: std::collections::HashMap<usize, (String, String, usize)>,
 }
 
@@ -164,7 +170,7 @@ impl StreamState {
         }
     }
 
-    /// 当前块是否是打开中的 tool_use 块
+    /// Returns true if the currently open block is a tool_use block
     pub fn is_tool_block_open(&self) -> bool {
         if !self.content_block_open {
             return false;

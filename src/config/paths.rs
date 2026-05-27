@@ -2,19 +2,19 @@ use anyhow::Result;
 use std::path::PathBuf;
 use tokio::fs;
 
-/// 应用数据目录：~/.local/share/copilot-api-proxy
+/// Application data directory: ~/.local/share/copilot-api-proxy
 fn app_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("copilot-api-proxy")
 }
 
-/// GitHub Token 缓存文件路径
+/// Path to the cached GitHub Token file
 pub fn github_token_path() -> PathBuf {
     app_dir().join("github_token")
 }
 
-/// 确保必要目录和文件存在
+/// Ensure the required directories and files exist
 pub async fn ensure_paths() -> Result<()> {
     let dir = app_dir();
     fs::create_dir_all(&dir).await?;
@@ -22,12 +22,12 @@ pub async fn ensure_paths() -> Result<()> {
     Ok(())
 }
 
-/// 如果文件不存在则创建空文件，并设置权限 0600
+/// Create an empty file if it does not exist and set permissions to 0600
 async fn ensure_file(path: PathBuf) -> Result<()> {
     if !path.exists() {
         fs::write(&path, "").await?;
 
-        // 仅 Unix 系统设置文件权限
+        // Set file permissions on Unix only
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
