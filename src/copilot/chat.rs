@@ -111,7 +111,7 @@ pub struct ChunkChoice {
 pub async fn create_chat_completions(
     client: &reqwest::Client,
     state: &AppState,
-    payload: ChatCompletionsPayload,
+    payload: &ChatCompletionsPayload,
 ) -> Result<Response> {
     let copilot_token = state
         .copilot_token

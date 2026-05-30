@@ -5,12 +5,14 @@ use crate::copilot::chat::ChatCompletionChunk;
 use super::translate::map_stop_reason;
 use super::types::{ContentBlock, ContentDelta, StreamEvent, StreamState, StreamUsage};
 
-/// Translate one OpenAI chunk into one or more Anthropic SSE events
-pub fn translate_chunk(chunk: &ChatCompletionChunk, state: &mut StreamState) -> Vec<StreamEvent> {
-    let mut events = Vec::new();
-
+/// Translate one OpenAI chunk into one or more Anthropic SSE events; results are appended to `events`.
+pub fn translate_chunk(
+    chunk: &ChatCompletionChunk,
+    state: &mut StreamState,
+    events: &mut Vec<StreamEvent>,
+) {
     let Some(choice) = chunk.choices.first() else {
-        return events;
+        return;
     };
     let delta = &choice.delta;
 
@@ -150,8 +152,6 @@ pub fn translate_chunk(chunk: &ChatCompletionChunk, state: &mut StreamState) -> 
         });
         events.push(StreamEvent::MessageStop);
     }
-
-    events
 }
 
 fn extract_input_usage(chunk: &ChatCompletionChunk) -> (u32, Option<u32>) {

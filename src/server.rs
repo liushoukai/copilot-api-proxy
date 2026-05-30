@@ -1,15 +1,14 @@
 use std::net::SocketAddr;
+use std::sync::LazyLock;
 
 use anyhow::Result;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use futures::StreamExt;
-use humansize::{DECIMAL, format_size};
 use jsonpath_rust::{JsonPath, JsonPathValue};
 use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
@@ -28,6 +27,11 @@ use crate::copilot::models::get_models;
 use crate::state::AppState;
 use crate::token::refresh_copilot_token;
 
+// Compiled once at startup; reused on every /v1/messages request.
+static BILLING_HEADER_PATH: LazyLock<JsonPath> = LazyLock::new(|| {
+    JsonPath::try_from("$[?(@.type=='text')].text").expect("static JSONPath is valid")
+});
+
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
@@ -38,31 +42,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(chat_completions_handler))
         .route("/v1/embeddings", post(embeddings_handler))
         .route("/v1/messages", post(messages_handler))
-        .layer(from_fn(log_request_size_middleware))
         .with_state(state.clone())
-}
-
-/// Middleware that logs each request path and body size.
-async fn log_request_size_middleware(req: Request, next: Next) -> Response {
-    let path = req.uri().path().to_owned();
-    let method = req.method().clone();
-    let (parts, body) = req.into_parts();
-
-    let bytes = match axum::body::to_bytes(body, usize::MAX).await {
-        Ok(b) => b,
-        Err(e) => {
-            error!("Failed to read request body: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
-    };
-    info!(
-        "{} {} request body size: {}",
-        method,
-        path,
-        format_size(bytes.len(), DECIMAL)
-    );
-    let req = Request::from_parts(parts, Body::from(bytes));
-    next.run(req).await
 }
 
 async fn health_handler(State(state): State<AppState>) -> Json<Value> {
@@ -113,7 +93,7 @@ async fn chat_completions_handler(
         );
     }
 
-    let upstream_resp = match create_with_retry(&state, payload, "chat/completions").await {
+    let upstream_resp = match create_with_retry(&state, &payload, "chat/completions").await {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -153,10 +133,10 @@ fn is_auth_error(status: StatusCode) -> bool {
 /// Send an upstream request; refresh the token and retry once on authentication failure.
 async fn create_with_retry(
     state: &AppState,
-    payload: ChatCompletionsPayload,
+    payload: &ChatCompletionsPayload,
     tag: &str,
 ) -> Result<reqwest::Response, Response> {
-    let mut resp = match create_chat_completions(&state.client, state, payload.clone()).await {
+    let mut resp = match create_chat_completions(&state.client, state, payload).await {
         Ok(r) => r,
         Err(e) => {
             error!("{} request failed: {}", tag, e);
@@ -234,13 +214,11 @@ async fn messages_handler(
 
     // Extract text fields that start with x-anthropic-billing-header from the system array.
     if let Some(ref sys) = payload.system {
-        if let Ok(path) = JsonPath::try_from("$[?(@.type=='text')].text") {
-            for item in path.find_slice(sys) {
-                if let JsonPathValue::Slice(v, _) = item {
-                    if let Some(s) = v.as_str() {
-                        if s.starts_with("x-anthropic-billing-header") {
-                            info!("x-anthropic-billing-header: {}", s);
-                        }
+        for item in BILLING_HEADER_PATH.find_slice(sys) {
+            if let JsonPathValue::Slice(v, _) = item {
+                if let Some(s) = v.as_str() {
+                    if s.starts_with("x-anthropic-billing-header") {
+                        info!("x-anthropic-billing-header: {}", s);
                     }
                 }
             }
@@ -248,22 +226,9 @@ async fn messages_handler(
     }
 
     let openai_payload = translate_to_openai(&payload, &available_models);
-    // Log the forwarded request body size after translation.
-    if let Ok(forwarded_bytes) = serde_json::to_vec(&openai_payload) {
-        info!(
-            "messages → model: {} → {}; forwarded request body size: {}",
-            payload.model,
-            openai_payload.model,
-            format_size(forwarded_bytes.len(), DECIMAL)
-        );
-    } else {
-        info!(
-            "messages → model: {} → {}",
-            payload.model, openai_payload.model
-        );
-    }
+    info!("messages → model: {} → {}", payload.model, openai_payload.model);
 
-    let upstream_resp = match create_with_retry(&state, openai_payload, "messages").await {
+    let upstream_resp = match create_with_retry(&state, &openai_payload, "messages").await {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -303,6 +268,8 @@ async fn messages_stream_response(upstream_resp: reqwest::Response) -> Response 
     // Background task: translate events and write them into the channel.
     tokio::spawn(async move {
         let mut stream_state = StreamState::new();
+        // Reuse allocation across chunks to avoid per-chunk heap allocation.
+        let mut events: Vec<StreamEvent> = Vec::new();
 
         loop {
             match lines.next_line().await {
@@ -326,10 +293,11 @@ async fn messages_stream_response(upstream_resp: reqwest::Response) -> Response 
                         }
                     };
 
-                    let events = translate_chunk(&chunk, &mut stream_state);
-                    for event in events {
-                        let event_type = event_type_name(&event);
-                        let json_data = match serde_json::to_string(&event) {
+                    events.clear();
+                    translate_chunk(&chunk, &mut stream_state, &mut events);
+                    for event in &events {
+                        let event_type = event_type_name(event);
+                        let json_data = match serde_json::to_string(event) {
                             Ok(s) => s,
                             Err(e) => {
                                 error!("Failed to serialize event: {}", e);
