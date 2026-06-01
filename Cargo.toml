@@ -38,10 +38,3 @@ tokio-util = { version = "0.7.18", features = ["io"] }
 tokio-stream = "0.1.18"
 futures = "0.3.32"
 humansize = "2"
-
-[dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "stream"
-harness = false
