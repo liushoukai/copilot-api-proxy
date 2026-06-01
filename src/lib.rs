@@ -1,3 +1,4 @@
+pub mod anthropic;
 pub mod config;
 pub mod copilot;
 pub mod github;

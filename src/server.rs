@@ -6,9 +6,12 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
+use axum::extract::Request;
 use futures::StreamExt;
+use humansize::{DECIMAL, format_size};
 use jsonpath_rust::{JsonPath, JsonPathValue};
 use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
@@ -27,6 +30,21 @@ use crate::copilot::models::get_models;
 use crate::state::AppState;
 use crate::token::refresh_copilot_token;
 
+/// Middleware that logs each request path and Content-Length without buffering the body.
+async fn log_request_size_middleware(req: Request, next: Next) -> Response {
+    let path = req.uri().path().to_owned();
+    let method = req.method().clone();
+    let size = req
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|n| format_size(n, DECIMAL))
+        .unwrap_or_else(|| "-".to_string());
+    info!("{} {} request body size: {}", method, path, size);
+    next.run(req).await
+}
+
 // Compiled once at startup; reused on every /v1/messages request.
 static BILLING_HEADER_PATH: LazyLock<JsonPath> = LazyLock::new(|| {
     JsonPath::try_from("$[?(@.type=='text')].text").expect("static JSONPath is valid")
@@ -42,6 +60,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(chat_completions_handler))
         .route("/v1/embeddings", post(embeddings_handler))
         .route("/v1/messages", post(messages_handler))
+        .layer(from_fn(log_request_size_middleware))
         .with_state(state.clone())
 }
 
@@ -226,7 +245,13 @@ async fn messages_handler(
     }
 
     let openai_payload = translate_to_openai(&payload, &available_models);
-    info!("messages → model: {} → {}", payload.model, openai_payload.model);
+    let forwarded_size = serde_json::to_vec(&openai_payload)
+        .map(|b| format_size(b.len() as u64, DECIMAL))
+        .unwrap_or_else(|_| "-".to_string());
+    info!(
+        "messages → model: {} → {}; forwarded body size: {}",
+        payload.model, openai_payload.model, forwarded_size
+    );
 
     let upstream_resp = match create_with_retry(&state, &openai_payload, "messages").await {
         Ok(r) => r,
