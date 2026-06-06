@@ -84,11 +84,11 @@ pub async fn run(args: &StartArgs) -> Result<()> {
     let models = fetch_models_with_retry(&state, MAX_RETRIES).await?;
 
     info!(
-        "Available models:\n{}",
+        "🤖 Available models:\n{}",
         models
             .data
             .iter()
-            .map(|m| format!("  - {}", m.id))
+            .map(|m| format!("  ✦ {}", m.id))
             .collect::<Vec<_>>()
             .join("\n")
     );
