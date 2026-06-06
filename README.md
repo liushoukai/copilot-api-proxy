@@ -118,7 +118,7 @@ GitHub Copilot filters available models based on your exit IP. When connecting d
 If you start without a proxy and see this warning in the logs:
 
 ```
-WARN ⚠️  模型列表中没有 claude-* 模型 ...
+WARN No claude-* models were found in the model list; ...
 ```
 
 it means your current exit IP is in mainland China and Copilot has filtered out Claude models. Add `--proxy` and restart.
