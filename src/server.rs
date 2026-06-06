@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::sync::LazyLock;
 
 use anyhow::Result;
 use axum::Router;
@@ -12,7 +11,6 @@ use axum::routing::{get, post};
 use axum::extract::Request;
 use futures::StreamExt;
 use humansize::{DECIMAL, format_size};
-use jsonpath_rust::{JsonPath, JsonPathValue};
 use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
 use tokio_util::io::StreamReader;
@@ -45,10 +43,6 @@ async fn log_request_size_middleware(req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
-// Compiled once at startup; reused on every /v1/messages request.
-static BILLING_HEADER_PATH: LazyLock<JsonPath> = LazyLock::new(|| {
-    JsonPath::try_from("$[?(@.type=='text')].text").expect("static JSONPath is valid")
-});
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
@@ -224,23 +218,27 @@ fn model_to_json(m: &crate::copilot::models::Model) -> Value {
 /// Anthropic Messages API handler; translates requests to Copilot and responses back to Anthropic.
 async fn messages_handler(
     State(state): State<AppState>,
-    Json(payload): Json<MessagesPayload>,
+    Json(mut payload): Json<MessagesPayload>,
 ) -> Response {
     let is_stream = payload.stream.unwrap_or(false);
 
     // Read model IDs from cache. Arc clone avoids string copies.
     let available_models = state.model_ids.read().await.clone();
 
-    // Extract text fields that start with x-anthropic-billing-header from the system array.
-    if let Some(ref sys) = payload.system {
-        for item in BILLING_HEADER_PATH.find_slice(sys) {
-            if let JsonPathValue::Slice(v, _) = item {
-                if let Some(s) = v.as_str() {
-                    if s.starts_with("x-anthropic-billing-header") {
-                        info!("x-anthropic-billing-header: {}", s);
-                    }
-                }
+    // Strip x-anthropic-billing-header entries from the system array before forwarding.
+    if let Some(Value::Array(arr)) = payload.system.as_mut() {
+        let before = arr.len();
+        arr.retain(|item| {
+            let text = item.get("text").and_then(Value::as_str).unwrap_or("");
+            if text.starts_with("x-anthropic-billing-header") {
+                info!("x-anthropic-billing-header: {}", text);
+                return false;
             }
+            true
+        });
+        let removed = before - arr.len();
+        if removed > 0 {
+            info!("stripped {} x-anthropic-billing-header item(s) from system array", removed);
         }
     }
 
