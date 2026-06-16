@@ -2,9 +2,9 @@ use anyhow::Result;
 use std::path::PathBuf;
 use tokio::fs;
 
-/// Application data directory: ~/.local/share/copilot-api-proxy
+/// Application config directory: ~/.config/copilot-api-proxy
 fn app_dir() -> PathBuf {
-    dirs::data_local_dir()
+    dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("copilot-api-proxy")
 }

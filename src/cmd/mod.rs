@@ -5,7 +5,8 @@ pub mod start;
 
 /// copilot-api-proxy: GitHub Copilot API proxy tool
 #[derive(Parser)]
-#[command(name = "copilot-api-proxy", version, about, long_about = None)]
+#[command(name = "copilot-api-proxy", version, about, long_about = None,
+    after_help = "Token file: ~/.config/copilot-api-proxy/github_token")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
