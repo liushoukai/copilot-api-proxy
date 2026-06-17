@@ -144,6 +144,7 @@ fn is_auth_error(status: StatusCode) -> bool {
 }
 
 /// Send an upstream request; refresh the token and retry once on authentication failure.
+/// Also retries once on 408 (server-side body read timeout) without token refresh.
 async fn create_with_retry(
     state: &AppState,
     payload: &ChatCompletionsPayload,
@@ -174,6 +175,20 @@ async fn create_with_retry(
             Ok(r) => r,
             Err(e) => {
                 error!("{} retry request failed: {}", tag, e);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response());
+            }
+        };
+    }
+
+    if resp.status() == StatusCode::REQUEST_TIMEOUT {
+        tracing::warn!(
+            "{} got 408 (server body read timeout, large request body); retrying once...",
+            tag
+        );
+        resp = match create_chat_completions(&state.client, state, payload).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!("{} retry after 408 failed: {}", tag, e);
                 return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response());
             }
         };
