@@ -7,7 +7,7 @@ use crate::copilot::models::get_models;
 use crate::github::vscode_version::get_vscode_version;
 use crate::server::serve;
 use crate::state::AppState;
-use crate::token::{setup_copilot_token, setup_github_token};
+use crate::token::{persist_github_token, setup_copilot_token, setup_github_token};
 
 #[derive(Args)]
 pub struct StartArgs {
@@ -51,7 +51,7 @@ pub async fn run(args: &StartArgs) -> Result<()> {
     info!("VSCode version: {}", vscode_version);
 
     // Build global state, passing proxy address explicitly (falls back to env vars when absent)
-    let state = AppState::new(&vscode_version, args.proxy.as_deref());
+    let state = AppState::new(&vscode_version, args.proxy.as_deref(), None); // max_messages wired in Task 3
     if let Some(ref proxy) = args.proxy {
         info!("Proxy configured: {}", proxy);
     }
@@ -59,6 +59,7 @@ pub async fn run(args: &StartArgs) -> Result<()> {
     // Obtain GitHub Token
     if let Some(ref token) = args.github_token {
         info!("Using GitHub Token provided from the command line");
+        persist_github_token(token).await?;
         *state.github_token.write().await = Some(token.clone());
     } else {
         setup_github_token(&state, false).await?;

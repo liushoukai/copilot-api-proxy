@@ -1,17 +1,25 @@
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 
 /// Application config directory: ~/.config/copilot-api-proxy
 fn app_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("copilot-api-proxy")
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    app_dir_with_home(&home)
+}
+
+fn app_dir_with_home(home: &Path) -> PathBuf {
+    home.join(".config").join("copilot-api-proxy")
 }
 
 /// Path to the cached GitHub Token file
 pub fn github_token_path() -> PathBuf {
     app_dir().join("github_token")
+}
+
+/// Path to the proxy configuration file
+pub fn config_file_path() -> PathBuf {
+    app_dir().join("config.toml")
 }
 
 /// Ensure the required directories and files exist
@@ -36,4 +44,25 @@ async fn ensure_file(path: PathBuf) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_token_path_uses_home_config_directory() {
+        let temp_dir = tempfile::tempdir().expect("create temp home");
+
+        let expected = temp_dir
+            .path()
+            .join(".config")
+            .join("copilot-api-proxy")
+            .join("github_token");
+
+        assert_eq!(
+            app_dir_with_home(temp_dir.path()).join("github_token"),
+            expected
+        );
+    }
 }

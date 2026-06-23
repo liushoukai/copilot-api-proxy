@@ -3,12 +3,12 @@ use std::net::SocketAddr;
 use anyhow::Result;
 use axum::Router;
 use axum::body::Body;
+use axum::extract::Request;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
-use axum::extract::Request;
 use futures::StreamExt;
 use humansize::{DECIMAL, format_size};
 use serde_json::{Value, json};
@@ -42,7 +42,6 @@ async fn log_request_size_middleware(req: Request, next: Next) -> Response {
     info!("{} {} request body size: {}", method, path, size);
     next.run(req).await
 }
-
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
@@ -253,7 +252,10 @@ async fn messages_handler(
         });
         let removed = before - arr.len();
         if removed > 0 {
-            info!("stripped {} x-anthropic-billing-header item(s) from system array", removed);
+            info!(
+                "stripped {} x-anthropic-billing-header item(s) from system array",
+                removed
+            );
         }
     }
 

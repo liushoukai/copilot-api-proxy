@@ -20,6 +20,13 @@ async fn write_github_token(token: &str) -> Result<()> {
     Ok(())
 }
 
+/// Persist a GitHub Token provided externally (e.g. from CLI) to the token cache file.
+pub async fn persist_github_token(token: &str) -> Result<()> {
+    ensure_paths().await?;
+    write_github_token(token).await?;
+    Ok(())
+}
+
 /// Set up GitHub Access Token; all requests use state.client (reads proxy env vars automatically)
 pub async fn setup_github_token(state: &AppState, force: bool) -> Result<()> {
     ensure_paths().await?;
